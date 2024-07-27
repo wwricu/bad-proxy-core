@@ -14,6 +14,10 @@ jobs:
   build:
     name: Check
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bad_proxy_go
+        shell: bash
     steps:
       - name: Checkout codebase
         uses: actions/checkout@v4
@@ -25,6 +29,4 @@ jobs:
           cache: false
           go-version-file: bad_proxy_go/go.mod
       - name: Build
-        run: |
-          cd bad_proxy_go
-          go build -o bad_proxy
+        run: go build -o bad_proxy
