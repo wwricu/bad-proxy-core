@@ -1,14 +1,5 @@
 name: Build Artifact
 on:
-  push:
-    branches:
-      - master
-    paths-ignore:
-      - "**.yml"
-      - "**.md"
-      - "**.sh"
-      - "**.json"
-      - ".gitignore"
   workflow_dispatch:
 jobs:
   build:
