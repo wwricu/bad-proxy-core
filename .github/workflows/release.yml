@@ -1,14 +1,5 @@
 name: Release Distribution
 on:
-  push:
-    tags:
-      - "v1.**"
-    paths-ignore:
-      - "**.yml"
-      - "**.md"
-      - "**.sh"
-      - "**.json"
-      - ".gitignore"
   workflow_dispatch:
 jobs:
   release_github:
@@ -33,10 +24,10 @@ jobs:
         run: |
           chmod +x ./build.sh
           ./build.sh ${{ vars.DIST_NAME }}
-      - name: Release and upload assets
-        run: gh release create ${{ github.ref_name }} --title ${{ github.ref_name }} --generate-notes --latest ./dist/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: snapshot
+          files: dist/*
       - name: Attest
         uses: actions/attest-build-provenance@v1
         with:
