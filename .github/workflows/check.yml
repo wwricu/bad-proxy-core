@@ -1,34 +1,16 @@
-name: Build Artifact
+name: Checking build
 permissions:
   contents: read
 on:
   push:
-    branches-ignore:
-      - master
-    paths-ignore:
-      - "**.yml"
-      - "**.md"
-      - "**.sh"
-      - "**.json"
-      - ".gitignore"
-  workflow_dispatch:
 jobs:
   build:
     name: Check
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: bad-proxy-core
-        shell: bash
     steps:
-      - name: Checkout codebase
-        uses: actions/checkout@v4
-        with:
-          path: bad-proxy-core
-      - name: Setup Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           cache: false
-          go-version-file: bad-proxy-core/go.mod
-      - name: Build
-        run: go build -o bad_proxy
+          go-version-file: go.mod
+      - run: go build -o bad_proxy
