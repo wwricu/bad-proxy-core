@@ -1,4 +1,6 @@
 name: Build Artifact
+permissions:
+  contents: read
 on:
   push:
     branches-ignore:
