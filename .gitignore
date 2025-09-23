@@ -9,4 +9,6 @@ build
 *.run
 *.crt
 *.key
+*.json
+*.toml
 conf/config.json
