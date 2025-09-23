@@ -60,6 +60,8 @@ func (inbound *Inbound) Accept() (inConn InboundConnect, err error) {
 		inConn = &protocols.BtpInbound{Conn: conn, Secret: inbound.secret}
 	case SOCKS:
 		inConn = &protocols.Socks5Inbound{Conn: conn}
+	case TROJAN:
+		inConn = &protocols.TrojanInbound{Conn: conn, Password: inbound.secret}
 	}
 	return
 }

@@ -8,10 +8,6 @@ import (
 	"strings"
 )
 
-type Request interface {
-	Parse()
-}
-
 type HTTPRequest struct {
 	Method  string
 	url     string
