@@ -2,10 +2,11 @@ package transport
 
 import (
 	"errors"
-	"golang.org/x/net/websocket"
 	"net"
 	"sync"
 	"time"
+
+	"golang.org/x/net/websocket"
 )
 
 type WsListener struct {

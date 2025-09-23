@@ -2,9 +2,10 @@ package transport
 
 import (
 	"crypto/tls"
-	"golang.org/x/net/websocket"
 	"net"
 	"net/http"
+
+	"golang.org/x/net/websocket"
 )
 
 type ProtocolType string

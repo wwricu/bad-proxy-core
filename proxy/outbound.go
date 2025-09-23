@@ -1,9 +1,10 @@
 package proxy
 
 import (
+	"log"
+
 	"github.com/wwricu/bad-proxy-core/protocols"
 	"github.com/wwricu/bad-proxy-core/transport"
-	"log"
 )
 
 type OutboundConfig struct {

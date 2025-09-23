@@ -2,12 +2,13 @@ package proxy
 
 import (
 	"encoding/json"
-	"github.com/wwricu/bad-proxy-core/router"
-	"github.com/wwricu/bad-proxy-core/transport"
 	"io"
 	"log"
 	"os"
 	"strings"
+
+	"github.com/wwricu/bad-proxy-core/router"
+	"github.com/wwricu/bad-proxy-core/transport"
 )
 
 type Proxy struct {
