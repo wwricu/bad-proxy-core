@@ -7,4 +7,6 @@ build
 *.iml
 *.exe
 *.run
+*.crt
+*.key
 conf/config.json

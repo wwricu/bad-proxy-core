@@ -3,8 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/wwricu/bad-proxy-core/proxy"
 	"os"
+
+	"github.com/wwricu/bad-proxy-core/proxy"
 )
 
 const (

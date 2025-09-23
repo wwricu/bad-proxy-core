@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"github.com/wwricu/bad-proxy-core/structure"
 	"log"
 	"math/big"
 	"net"
@@ -16,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wwricu/bad-proxy-core/structure"
 )
 
 const (

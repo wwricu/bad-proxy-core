@@ -1,10 +1,11 @@
 package router
 
 import (
-	"github.com/wwricu/bad-proxy-core/structure"
 	"log"
 	"regexp"
 	"strings"
+
+	"github.com/wwricu/bad-proxy-core/structure"
 )
 
 type Config struct {

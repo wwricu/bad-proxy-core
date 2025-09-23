@@ -2,12 +2,13 @@ package proxy
 
 import (
 	"encoding/json"
-	"github.com/wwricu/bad-proxy-core/router"
-	"github.com/wwricu/bad-proxy-core/transport"
 	"io"
 	"log"
 	"os"
 	"strings"
+
+	"github.com/wwricu/bad-proxy-core/router"
+	"github.com/wwricu/bad-proxy-core/transport"
 )
 
 type Proxy struct {
@@ -24,9 +25,10 @@ type Config struct {
 }
 
 const (
-	BTP   = "btp"
-	SOCKS = "socks"
-	HTTP  = "http"
+	BTP    = "btp"
+	SOCKS  = "socks"
+	HTTP   = "http"
+	TROJAN = "trojan"
 )
 
 func newProxy(config Config) (newProxy Proxy) {
@@ -114,17 +116,24 @@ func (proxy Proxy) proxy(in InboundConnect) {
 	outbound := proxy.route(address)
 	out, err := outbound.Dial(address, payload) // handshake
 	if err != nil {
-		log.Printf("outbound dial to %s failed\n", outbound.address)
+		log.Printf("outbound dial to %s failed, err=%v\n", address, err)
 		return
 	}
+
+	done := make(chan struct{})
 	go func() {
 		if _, err := io.Copy(in, out); err != nil {
-			log.Printf("write to %s failed\n", outbound.address)
+			log.Printf("copy out->in: %v\n", err)
 		}
+		close(done)
 	}()
 	if _, err = io.Copy(out, in); err != nil {
-		log.Printf("read from %s failed\n", outbound.address)
+		log.Printf("copy in->out: %v\n", err)
 	}
+
+	// TLS OK
+
+	<-done
 	_ = in.Close()
 	_ = out.Close()
 }
