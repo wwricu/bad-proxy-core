@@ -2,12 +2,13 @@ package proxy
 
 import (
 	"encoding/json"
-	"github.com/wwricu/bad-proxy-core/router"
-	"github.com/wwricu/bad-proxy-core/transport"
 	"io"
 	"log"
 	"os"
 	"strings"
+
+	"github.com/wwricu/bad-proxy-core/router"
+	"github.com/wwricu/bad-proxy-core/transport"
 )
 
 type Proxy struct {
@@ -24,9 +25,10 @@ type Config struct {
 }
 
 const (
-	BTP   = "btp"
-	SOCKS = "socks"
-	HTTP  = "http"
+	BTP    = "btp"
+	SOCKS  = "socks"
+	HTTP   = "http"
+	TROJAN = "trojan"
 )
 
 func newProxy(config Config) (newProxy Proxy) {
@@ -73,6 +75,10 @@ func newProxy(config Config) (newProxy Proxy) {
 		}
 		newProxy.outbounds[out.Tag] = &newOutbound
 	}
+
+	if _, exist := newProxy.outbounds[""]; exist != true {
+		log.Fatalln("No Default outbound!")
+	}
 	return
 }
 
@@ -102,6 +108,7 @@ func (proxy Proxy) proxy(in InboundConnect) {
 		if r := recover(); r != nil {
 			log.Println(r)
 		}
+		_ = in.Close()
 	}()
 
 	address, payload, err := in.Connect() // handshake
@@ -113,20 +120,26 @@ func (proxy Proxy) proxy(in InboundConnect) {
 	// routing to find outbound template
 	outbound := proxy.route(address)
 	out, err := outbound.Dial(address, payload) // handshake
+	defer func() {
+		_ = out.Close()
+	}()
 	if err != nil {
-		log.Printf("outbound dial to %s failed\n", outbound.address)
+		log.Printf("outbound dial to %s failed, err=%v\n", address, err)
 		return
 	}
+
+	done := make(chan struct{})
 	go func() {
 		if _, err := io.Copy(in, out); err != nil {
-			log.Printf("write to %s failed\n", outbound.address)
+			log.Printf("copy out->in: %v\n", err)
 		}
+		close(done)
 	}()
 	if _, err = io.Copy(out, in); err != nil {
-		log.Printf("read from %s failed\n", outbound.address)
+		log.Printf("copy in->out: %v\n", err)
 	}
-	_ = in.Close()
-	_ = out.Close()
+
+	<-done
 }
 
 func (proxy Proxy) route(address string) Outbound {

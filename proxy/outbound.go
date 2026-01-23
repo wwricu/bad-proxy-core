@@ -1,9 +1,10 @@
 package proxy
 
 import (
+	"log"
+
 	"github.com/wwricu/bad-proxy-core/protocols"
 	"github.com/wwricu/bad-proxy-core/transport"
-	"log"
 )
 
 type OutboundConfig struct {
@@ -35,23 +36,27 @@ func (outbound *Outbound) Dial(targetAddr string, payload []byte) (out OutboundC
 		if err != nil {
 			return nil, err
 		}
-		log.Println("btp connect to", outbound.address)
 		out = &protocols.BtpOutbound{Conn: conn, Secret: outbound.secret}
 	case SOCKS:
 		var conn, err = transport.Dial(transport.TCP, outbound.address)
 		if err != nil {
 			return nil, err
 		}
-		log.Println("socks connect to", outbound.address)
 		out = &protocols.Socks5Outbound{Conn: conn}
+	case TROJAN:
+		var conn, err = transport.Dial(outbound.transmit, outbound.address+outbound.wsPath)
+		if err != nil {
+			return nil, err
+		}
+		out = &protocols.TrojanOutbound{Conn: conn, Password: outbound.secret}
 	default: // free
 		var conn, err = transport.Dial(outbound.transmit, targetAddr+outbound.wsPath)
 		if err != nil {
 			return nil, err
 		}
-		log.Println("free connect to", targetAddr)
 		out = &protocols.FreeOutbound{Conn: conn}
 	}
+	log.Println(outbound.protocol, "connect to", outbound.address)
 	err = out.Connect(targetAddr, payload)
 	return
 }

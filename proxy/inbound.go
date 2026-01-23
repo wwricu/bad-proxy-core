@@ -1,10 +1,11 @@
 package proxy
 
 import (
-	"github.com/wwricu/bad-proxy-core/protocols"
-	"github.com/wwricu/bad-proxy-core/transport"
 	"log"
 	"net"
+
+	"github.com/wwricu/bad-proxy-core/protocols"
+	"github.com/wwricu/bad-proxy-core/transport"
 )
 
 type InboundConfig struct {
@@ -59,6 +60,8 @@ func (inbound *Inbound) Accept() (inConn InboundConnect, err error) {
 		inConn = &protocols.BtpInbound{Conn: conn, Secret: inbound.secret}
 	case SOCKS:
 		inConn = &protocols.Socks5Inbound{Conn: conn}
+	case TROJAN:
+		inConn = &protocols.TrojanInbound{Conn: conn, Password: inbound.secret}
 	}
 	return
 }

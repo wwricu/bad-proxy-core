@@ -36,6 +36,8 @@ const (
 
 	Ipv4Length = 4
 	Ipv6Length = 16
+
+	sockBufferSize = 1024
 )
 
 type Socks5Message struct {
@@ -126,7 +128,7 @@ func (outbound *Socks5Outbound) Connect(targetAddr string, payload []byte) (err 
 	if _, err = outbound.Conn.Write(buffer); err != nil {
 		return
 	}
-	buffer = make([]byte, 1024)
+	buffer = make([]byte, sockBufferSize)
 	// the chosen encryption
 	if _, err = outbound.Conn.Read(buffer); err != nil || buffer[2] != MethodNoAuth { // only no encryption supported
 		return
@@ -137,7 +139,7 @@ func (outbound *Socks5Outbound) Connect(targetAddr string, payload []byte) (err 
 		return
 	}
 
-	buffer = make([]byte, 1024)
+	buffer = make([]byte, sockBufferSize)
 	if _, err = outbound.Conn.Read(buffer); err != nil {
 		return
 	}
@@ -169,7 +171,7 @@ type Socks5Inbound struct {
 }
 
 func (inbound *Socks5Inbound) Connect() (targetAddr string, payload []byte, err error) {
-	payload = make([]byte, 1024) // return rawdata on error
+	payload = make([]byte, sockBufferSize) // return rawdata on error
 	if _, err = inbound.Conn.Read(payload); err != nil {
 		return
 	}
@@ -183,7 +185,7 @@ func (inbound *Socks5Inbound) Connect() (targetAddr string, payload []byte, err 
 		return
 	}
 
-	payload = make([]byte, 1024)
+	payload = make([]byte, sockBufferSize)
 	if _, err = inbound.Conn.Read(payload); err != nil {
 		return
 	}

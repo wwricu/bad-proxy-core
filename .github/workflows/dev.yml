@@ -1,8 +1,8 @@
-name: Publish release
+name: Publish dev
 on:
   push:
     branches:
-      - release
+      - dev
   workflow_dispatch:
 jobs:
   release_github:
@@ -20,11 +20,8 @@ jobs:
           ./build.sh ${{ vars.DIST_NAME }}
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.version }}
+          tag_name: snapshot
           files: dist/*
-      - uses: actions/attest-build-provenance@v1
-        with:
-          subject-path: 'dist/**/*.tar.gz, dist/**/*.zip'
   release_dockerhub:
     runs-on: ubuntu-latest
     needs: release_github
@@ -40,4 +37,4 @@ jobs:
           push: true
           sbom: true
           provenance: mode=max
-          tags: wwricu/bad-proxy-core:${{ github.ref_name }}, wwricu/bad-proxy-core:latest
+          tags: wwricu/bad-proxy-core:snapshot

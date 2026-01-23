@@ -2,11 +2,16 @@ name: Checking build
 permissions:
   contents: read
 on:
-  push:
+  pull_request:
+    branches:
+      - master
+      - release
+  workflow_dispatch:
 jobs:
   build:
     name: Check
     runs-on: ubuntu-latest
+    permissions: write-all
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
