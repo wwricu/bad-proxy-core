@@ -35,6 +35,7 @@ const (
 	timeThreshold      = 210
 	btpMaxConfusionLen = 64
 	btpTimeDiffRand    = 30
+	btpBufferSize      = 4096
 )
 
 type BTPRequest struct {
@@ -177,7 +178,7 @@ func (inbound *BtpInbound) Fallback(rawData []byte) {
 }
 
 func (inbound *BtpInbound) Connect() (targetAddr string, payload []byte, err error) {
-	payload = make([]byte, 8196) // return rawData on error
+	payload = make([]byte, btpBufferSize) // return rawData on error
 	length, err := inbound.Conn.Read(payload)
 	if err != nil {
 		return

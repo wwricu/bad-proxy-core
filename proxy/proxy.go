@@ -75,6 +75,10 @@ func newProxy(config Config) (newProxy Proxy) {
 		}
 		newProxy.outbounds[out.Tag] = &newOutbound
 	}
+
+	if _, exist := newProxy.outbounds[""]; exist != true {
+		log.Fatalln("No Default outbound!")
+	}
 	return
 }
 
@@ -104,6 +108,7 @@ func (proxy Proxy) proxy(in InboundConnect) {
 		if r := recover(); r != nil {
 			log.Println(r)
 		}
+		_ = in.Close()
 	}()
 
 	address, payload, err := in.Connect() // handshake
@@ -115,6 +120,9 @@ func (proxy Proxy) proxy(in InboundConnect) {
 	// routing to find outbound template
 	outbound := proxy.route(address)
 	out, err := outbound.Dial(address, payload) // handshake
+	defer func() {
+		_ = out.Close()
+	}()
 	if err != nil {
 		log.Printf("outbound dial to %s failed, err=%v\n", address, err)
 		return
@@ -131,11 +139,7 @@ func (proxy Proxy) proxy(in InboundConnect) {
 		log.Printf("copy in->out: %v\n", err)
 	}
 
-	// TLS OK
-
 	<-done
-	_ = in.Close()
-	_ = out.Close()
 }
 
 func (proxy Proxy) route(address string) Outbound {

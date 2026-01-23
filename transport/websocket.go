@@ -11,9 +11,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const wsBufferSize = 1024
+
 var upgrader = &websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+	ReadBufferSize:  wsBufferSize,
+	WriteBufferSize: wsBufferSize,
 }
 
 type WsListener struct {
