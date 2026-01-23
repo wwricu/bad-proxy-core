@@ -1,13 +1,20 @@
 package transport
 
 import (
+	"bytes"
 	"errors"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 
-	"golang.org/x/net/websocket"
+	"github.com/gorilla/websocket"
 )
+
+var upgrader = &websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+}
 
 type WsListener struct {
 	addr net.Addr
@@ -30,7 +37,12 @@ func (listener *WsListener) Addr() net.Addr {
 	return listener.addr
 }
 
-func (listener *WsListener) handle(conn *websocket.Conn) {
+func (listener *WsListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+
 	cond := sync.NewCond(&sync.Mutex{})
 	ws := WsConnect{
 		conn: conn,
@@ -43,16 +55,38 @@ func (listener *WsListener) handle(conn *websocket.Conn) {
 }
 
 type WsConnect struct {
-	conn *websocket.Conn
-	cond *sync.Cond
+	conn   *websocket.Conn
+	cond   *sync.Cond
+	reader *bytes.Reader
 }
 
-func (ws WsConnect) Read(b []byte) (n int, err error) {
-	return ws.conn.Read(b)
+func (ws WsConnect) Read(b []byte) (int, error) {
+	if ws.reader == nil || ws.reader.Len() == 0 {
+		_, p, err := ws.conn.ReadMessage()
+		if err != nil {
+			return 0, err
+		}
+
+		if len(b) >= len(p) {
+			return copy(b, p), err // simply copy
+		}
+
+		ws.reader = bytes.NewReader(p)
+	}
+
+	n, err := ws.reader.Read(b)
+	if ws.reader.Len() == 0 {
+		ws.reader = nil
+	}
+	return n, err
 }
 
-func (ws WsConnect) Write(b []byte) (n int, err error) {
-	return ws.conn.Write(b)
+func (ws WsConnect) Write(b []byte) (int, error) {
+	err := ws.conn.WriteMessage(websocket.BinaryMessage, b)
+	if err != nil {
+		return 0, err
+	}
+	return len(b), err
 }
 
 func (ws WsConnect) Close() (err error) {
@@ -72,7 +106,10 @@ func (ws WsConnect) RemoteAddr() net.Addr {
 }
 
 func (ws WsConnect) SetDeadline(t time.Time) error {
-	return ws.conn.SetDeadline(t)
+	if err := ws.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return ws.SetWriteDeadline(t)
 }
 
 func (ws WsConnect) SetReadDeadline(t time.Time) error {

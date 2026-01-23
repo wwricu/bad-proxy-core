@@ -1,7 +1,5 @@
 module github.com/wwricu/bad-proxy-core
 
-go 1.24.0
+go 1.24.12
 
-toolchain go1.24.7
-
-require golang.org/x/net v0.44.0
+require github.com/gorilla/websocket v1.5.3
