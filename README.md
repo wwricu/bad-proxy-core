@@ -75,7 +75,7 @@ if you want to discard windows gui, use `go build -o bad_proxy.exe -ldflags "-s 
       "host": "<nginx domain>",
       "port": "<nginx port>",
       "protocol": "btp",
-      "transmit": "wss",
+      "transport": "wss",
       "ws_path": "/path"
     }
   ]
@@ -90,7 +90,7 @@ if you want to discard windows gui, use `go build -o bad_proxy.exe -ldflags "-s 
     "host": "0.0.0.0",
     "port": "<bad_proxy port>",
     "protocol": "btp",
-    "transmit": "ws",
+    "transport": "ws",
     "ws_path": "/path"
   }],
   "outbounds": [{
@@ -137,7 +137,7 @@ Example:
 ```
 
 When using "btp" as protocol, "secret" shall be specified,
-when using "ws" or "wss" as transmit, "ws_path" shall be specified.
+when using "ws" or "wss" as transport, "ws_path" shall be specified.
 
 Example:
 ```json
@@ -146,12 +146,12 @@ Example:
    "host": "domain",
    "port": "port",
    "protocol": "btp",
-   "transmit": "wss",
+   "transport": "wss",
    "ws_path": "/path"
  }
 ```
 
-When using "tls" as transmit protocol, you shall specify "tls_cert_path" and "tls_key_path"
+When using "tls" as transport protocol, you shall specify "tls_cert_path" and "tls_key_path"
 
 Example:
 ```json
@@ -199,7 +199,7 @@ Example:
    "host": "domain",
    "port": "port",
    "protocol": "btp",
-   "transmit": "wss",
+   "transport": "wss",
    "ws_path": "/path"
  },
  {
@@ -258,7 +258,7 @@ Typical client example:
       "host": "domain",
       "port": "port",
       "protocol": "btp",
-      "transmit": "wss",
+      "transport": "wss",
       "ws_path": "/path"
     },
     {
@@ -295,7 +295,7 @@ Typical server example:
       "host": "domain",
       "port": "port",
       "protocol": "btp",
-      "transmit": "wss",
+      "transport": "wss",
       "ws_path": "/path"
     },
     {

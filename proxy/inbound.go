@@ -13,7 +13,7 @@ type InboundConfig struct {
 	Host        string `json:"host"`
 	Port        string `json:"port"`
 	Protocol    string `json:"protocol"`
-	Transmit    string `json:"transmit"`
+	Transport   string `json:"transport"`
 	WsPath      string `json:"ws_path"`
 	TlsCertPath string `json:"tls_cert_path"`
 	TlsKeyPath  string `json:"tls_key_path"`
@@ -24,7 +24,7 @@ type Inbound struct {
 	secret      string
 	protocol    string
 	address     string
-	transmit    transport.ProtocolType
+	transport   transport.ProtocolType
 	wsPath      string
 	tlsCertPath string
 	tlsKeyPath  string
@@ -33,7 +33,7 @@ type Inbound struct {
 func (inbound *Inbound) Listen() (err error) {
 	inbound.listener, err = transport.Listen(
 		inbound.address,
-		inbound.transmit,
+		inbound.transport,
 		inbound.wsPath,
 		inbound.tlsCertPath,
 		inbound.tlsKeyPath,

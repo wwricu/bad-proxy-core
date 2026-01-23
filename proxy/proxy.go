@@ -52,7 +52,7 @@ func newProxy(config Config) (newProxy Proxy) {
 			secret:      in.Secret,
 			address:     in.Host + ":" + in.Port,
 			protocol:    in.Protocol,
-			transmit:    transport.GetProtocol(in.Transmit),
+			transport:   transport.GetProtocol(in.Transport),
 			wsPath:      in.WsPath,
 			tlsCertPath: in.TlsCertPath,
 			tlsKeyPath:  in.TlsKeyPath,
@@ -62,12 +62,12 @@ func newProxy(config Config) (newProxy Proxy) {
 
 	for _, out := range config.Outbounds {
 		newOutbound := Outbound{
-			tag:      out.Tag,
-			secret:   out.Secret,
-			address:  out.Host + ":" + out.Port,
-			protocol: out.Protocol,
-			transmit: transport.GetProtocol(out.Transmit),
-			wsPath:   out.WsPath,
+			tag:       out.Tag,
+			secret:    out.Secret,
+			address:   out.Host + ":" + out.Port,
+			protocol:  out.Protocol,
+			transport: transport.GetProtocol(out.Transport),
+			wsPath:    out.WsPath,
 		}
 		_, exist := newProxy.outbounds[out.Tag]
 		if exist == true {
