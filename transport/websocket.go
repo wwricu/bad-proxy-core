@@ -46,7 +46,7 @@ func (listener *WsListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cond := sync.NewCond(&sync.Mutex{})
-	ws := WsConnect{
+	ws := WsConn{
 		conn: conn,
 		cond: cond,
 	}
@@ -56,13 +56,13 @@ func (listener *WsListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cond.L.Unlock()
 }
 
-type WsConnect struct {
+type WsConn struct {
 	conn   *websocket.Conn
 	cond   *sync.Cond
 	reader *bytes.Reader
 }
 
-func (ws WsConnect) Read(b []byte) (int, error) {
+func (ws WsConn) Read(b []byte) (int, error) {
 	if ws.reader == nil || ws.reader.Len() == 0 {
 		_, p, err := ws.conn.ReadMessage()
 		if err != nil {
@@ -83,7 +83,7 @@ func (ws WsConnect) Read(b []byte) (int, error) {
 	return n, err
 }
 
-func (ws WsConnect) Write(b []byte) (int, error) {
+func (ws WsConn) Write(b []byte) (int, error) {
 	err := ws.conn.WriteMessage(websocket.BinaryMessage, b)
 	if err != nil {
 		return 0, err
@@ -91,7 +91,7 @@ func (ws WsConnect) Write(b []byte) (int, error) {
 	return len(b), err
 }
 
-func (ws WsConnect) Close() (err error) {
+func (ws WsConn) Close() (err error) {
 	ws.cond.L.Lock()
 	err = ws.conn.Close()
 	ws.cond.Broadcast()
@@ -99,25 +99,25 @@ func (ws WsConnect) Close() (err error) {
 	return
 }
 
-func (ws WsConnect) LocalAddr() net.Addr {
+func (ws WsConn) LocalAddr() net.Addr {
 	return ws.conn.LocalAddr()
 }
 
-func (ws WsConnect) RemoteAddr() net.Addr {
+func (ws WsConn) RemoteAddr() net.Addr {
 	return ws.conn.RemoteAddr()
 }
 
-func (ws WsConnect) SetDeadline(t time.Time) error {
+func (ws WsConn) SetDeadline(t time.Time) error {
 	if err := ws.SetReadDeadline(t); err != nil {
 		return err
 	}
 	return ws.SetWriteDeadline(t)
 }
 
-func (ws WsConnect) SetReadDeadline(t time.Time) error {
+func (ws WsConn) SetReadDeadline(t time.Time) error {
 	return ws.conn.SetReadDeadline(t)
 }
 
-func (ws WsConnect) SetWriteDeadline(t time.Time) error {
+func (ws WsConn) SetWriteDeadline(t time.Time) error {
 	return ws.conn.SetWriteDeadline(t)
 }

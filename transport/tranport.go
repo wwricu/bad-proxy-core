@@ -31,7 +31,7 @@ func Dial(protocol ProtocolType, address string) (net.Conn, error) {
 		return tls.Dial(TCP.Str(), address, &tls.Config{})
 	case WS, WSS:
 		conn, _, err := websocket.DefaultDialer.Dial(protocol.Str()+"://"+address, nil)
-		return WsConnect{conn: conn}, err // DO NOT return conn.NetConn()
+		return WsConn{conn: conn}, err // DO NOT return conn.NetConn()
 	default:
 		return net.Dial(TCP.Str(), address)
 	}
