@@ -3,10 +3,12 @@ package protocols
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"net"
 	"strconv"
+	"strings"
 )
 
 /*
@@ -41,6 +43,9 @@ o  DST.PORT desired destination port in network octet order
 const (
 	HashLen          = 56
 	trojanBufferSize = 4096
+	IPv4             = 0x01
+	Domain           = 0x03
+	IPv6             = 0x04
 )
 
 type TrojanInbound struct {
@@ -85,15 +90,15 @@ func (inbound *TrojanInbound) Connect() (targetAddr string, payload []byte, err 
 	ptr += 1
 
 	var addr string
-	if atyp == 0x01 {
+	if atyp == IPv4 {
 		addr = net.IP(payload[ptr : ptr+net.IPv4len]).String()
 		ptr += net.IPv4len
-	} else if atyp == 0x03 {
+	} else if atyp == Domain {
 		domainLen := int(payload[ptr])
 		ptr += 1
 		addr = string(payload[ptr : ptr+domainLen])
 		ptr += domainLen
-	} else if atyp == 0x04 {
+	} else if atyp == IPv6 {
 		addr = net.IP(payload[ptr : ptr+net.IPv6len]).String()
 		ptr += net.IPv6len
 	} else {
@@ -125,4 +130,58 @@ func (inbound *TrojanInbound) Write(b []byte) (int, error) {
 
 func (inbound *TrojanInbound) Close() error {
 	return inbound.Conn.Close()
+}
+
+type TrojanOutbound struct {
+	Conn     net.Conn
+	Password string
+}
+
+func (outbound *TrojanOutbound) Connect(targetAddr string, payload []byte) (err error) {
+	bytesBuffer := bytes.NewBuffer([]byte{})
+
+	hasher := sha256.New224()
+	hasher.Write([]byte(outbound.Password))
+	hash := hasher.Sum(nil)
+
+	_ = binary.Write(bytesBuffer, binary.BigEndian, []byte(hex.EncodeToString(hash)))
+	_ = binary.Write(bytesBuffer, binary.BigEndian, []byte("\r\n"))
+
+	hnp := strings.Split(targetAddr, ":")
+	host := []byte(hnp[0])
+	port, err := strconv.Atoi(hnp[1])
+
+	atyp := IPv6
+	ip := net.ParseIP(string(host))
+	if ip == nil {
+		atyp = Domain
+	} else if ip.To4() != nil {
+		atyp = IPv4
+	}
+
+	_ = binary.Write(bytesBuffer, binary.BigEndian, uint8(1))    // cmd
+	_ = binary.Write(bytesBuffer, binary.BigEndian, uint8(atyp)) // atyp
+	if atyp == Domain {
+		_ = binary.Write(bytesBuffer, binary.BigEndian, uint8(len(host)))
+	}
+	_ = binary.Write(bytesBuffer, binary.BigEndian, host)
+	_ = binary.Write(bytesBuffer, binary.BigEndian, uint16(port))
+	_ = binary.Write(bytesBuffer, binary.BigEndian, []byte("\r\n"))
+
+	_ = binary.Write(bytesBuffer, binary.BigEndian, payload)
+
+	_, err = outbound.Conn.Write(bytesBuffer.Bytes())
+	return
+}
+
+func (outbound *TrojanOutbound) Read(b []byte) (int, error) {
+	return outbound.Conn.Read(b)
+}
+
+func (outbound *TrojanOutbound) Write(b []byte) (int, error) {
+	return outbound.Conn.Write(b)
+}
+
+func (outbound *TrojanOutbound) Close() error {
+	return outbound.Conn.Close()
 }
