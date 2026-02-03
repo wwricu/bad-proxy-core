@@ -149,7 +149,10 @@ func (outbound *TrojanOutbound) Connect(targetAddr string, payload []byte) (err 
 
 	hnp := strings.Split(targetAddr, ":")
 	host := []byte(hnp[0])
-	port, err := strconv.Atoi(hnp[1])
+	port, err := strconv.ParseUint(hnp[1], 10, 16)
+	if err != nil {
+		return
+	}
 
 	atyp := IPv6
 	ip := net.ParseIP(string(host))
