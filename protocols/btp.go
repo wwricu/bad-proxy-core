@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"github.com/wwricu/bad-proxy-core/structure"
 	"log"
 	"math/big"
 	"net"
@@ -16,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wwricu/bad-proxy-core/structure"
 )
 
 const (
@@ -34,6 +35,7 @@ const (
 	timeThreshold      = 210
 	btpMaxConfusionLen = 64
 	btpTimeDiffRand    = 30
+	btpBufferSize      = 4096
 )
 
 type BTPRequest struct {
@@ -138,8 +140,8 @@ func encodeBtpRequest(address string, payload []byte, secret string) (res []byte
 
 	hnp := strings.Split(address, ":")
 	host := []byte(hnp[0])
-	port, err := strconv.Atoi(hnp[1])
-	if err != nil || port > int(^uint16(0)) {
+	port, err := strconv.ParseUint(hnp[1], 10, 16)
+	if err != nil {
 		return
 	}
 
@@ -176,7 +178,7 @@ func (inbound *BtpInbound) Fallback(rawData []byte) {
 }
 
 func (inbound *BtpInbound) Connect() (targetAddr string, payload []byte, err error) {
-	payload = make([]byte, 8196) // return rawData on error
+	payload = make([]byte, btpBufferSize) // return rawData on error
 	length, err := inbound.Conn.Read(payload)
 	if err != nil {
 		return
