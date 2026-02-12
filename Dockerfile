@@ -1,12 +1,11 @@
-FROM debian:stable-slim
+FROM alpine:latest
 
-ADD https://github.com/HerrKKK/bad_proxy_go/releases/latest/download/bad_proxy-linux-amd64.tar.gz /root
+WORKDIR /root
+ADD https://github.com/HerrKKK/bad_proxy_go/releases/latest/download/bad_proxy-linux-amd64.tar.gz .
 
-RUN cd /root && tar xzvf bad_proxy-linux-amd64.tar.gz \
-&& mkdir /etc/bad_proxy && rm bad_proxy-linux-amd64.tar.gz \
-&& cp ./bad_proxy-linux-amd64 /usr/bin/bad_proxy \
-&& cp ./rules.dat /etc/bad_proxy/rules.dat \
-&& ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
-&& echo 'Asia/Shanghai' > /etc/timezone
+RUN apk add --no-cache ca-certificates \
+&& tar xzvf bad_proxy-linux-amd64.tar.gz && rm bad_proxy-linux-amd64.tar.gz \
+&& mkdir /etc/bad_proxy && mv ./rules.dat /etc/bad_proxy/
+&& mv ./bad_proxy-linux-amd64 /usr/bin/bad_proxy \
 
 CMD ["/usr/bin/bad_proxy", "--config", "/etc/bad_proxy/config.json", "--router-path", "/etc/bad_proxy/rules.dat"]
