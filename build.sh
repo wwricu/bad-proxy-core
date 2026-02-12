@@ -9,6 +9,7 @@ function prepare() {
     then
       mkdir ./dist
     fi
+    export CGO_ENABLED=0
     wget https://github.com/HerrKKK/domain-list-community/releases/latest/download/${rule_filename}
 }
 
