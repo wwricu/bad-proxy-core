@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	versionMsg = "v1.0.5"
+	versionMsg = "v1.1.0"
 	helpMsg    = `
 	Bad proxy go is a primitive tool for breaching censorship
 	Run application:
