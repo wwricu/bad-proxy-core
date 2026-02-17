@@ -1,14 +1,6 @@
 package transport
 
-import (
-	"crypto/tls"
-	"net"
-	"net/http"
-
-	"github.com/gorilla/websocket"
-)
-
-type ProtocolType string
+import "net"
 
 const (
 	TCP ProtocolType = "tcp"
@@ -16,6 +8,16 @@ const (
 	WS  ProtocolType = "ws"
 	WSS ProtocolType = "wss"
 )
+
+type Dialer interface {
+	Dial(address string) (net.Conn, error)
+}
+
+type Listener interface {
+	Listen(address string) (net.Listener, error)
+}
+
+type ProtocolType string
 
 func (protocol ProtocolType) Str() string {
 	return string(protocol)
@@ -26,15 +28,18 @@ func GetProtocol(protocol string) ProtocolType {
 }
 
 func Dial(protocol ProtocolType, address string) (net.Conn, error) {
+	var dialer Dialer
+
 	switch protocol {
 	case TLS:
-		return tls.Dial(TCP.Str(), address, &tls.Config{})
+		dialer = NewTlsDialer()
 	case WS, WSS:
-		conn, _, err := websocket.DefaultDialer.Dial(protocol.Str()+"://"+address, nil)
-		return WsConn{conn: conn}, err // DO NOT return conn.NetConn()
+		dialer = NewWsDialer(protocol)
 	default:
-		return net.Dial(TCP.Str(), address)
+		dialer = NewTcpDialer()
 	}
+
+	return dialer.Dial(address)
 }
 
 func Listen(
@@ -43,25 +48,15 @@ func Listen(
 	wsPath string,
 	tlsCertPath string,
 	tlsKeyPath string,
-) (listener net.Listener, err error) {
+) (net.Listener, error) {
+	var listener Listener
 	switch protocol {
 	case TLS:
-		cert, err := tls.LoadX509KeyPair(tlsCertPath, tlsKeyPath)
-		if err != nil {
-			return listener, err
-		}
-		config := &tls.Config{Certificates: []tls.Certificate{cert}}
-		return tls.Listen(TCP.Str(), address, config)
+		listener = NewTlsListener(tlsCertPath, tlsKeyPath)
 	case WS:
-		listener := &WsListener{ch: make(chan net.Conn)}
-		http.Handle(wsPath, listener)
-		go func() {
-			if err := http.ListenAndServe(address, nil); err != nil {
-				panic(err)
-			}
-		}()
-		return listener, nil
+		listener = NewWsListener(wsPath)
 	default:
-		return net.Listen(TCP.Str(), address)
+		listener = NewTcpListener()
 	}
+	return listener.Listen(address)
 }

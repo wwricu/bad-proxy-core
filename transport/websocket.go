@@ -121,3 +121,32 @@ func (ws WsConn) SetReadDeadline(t time.Time) error {
 func (ws WsConn) SetWriteDeadline(t time.Time) error {
 	return ws.conn.SetWriteDeadline(t)
 }
+
+type WsManager struct {
+	protocol ProtocolType
+	wsPath   string
+}
+
+func (ws *WsManager) Dial(address string) (net.Conn, error) {
+	conn, _, err := websocket.DefaultDialer.Dial(ws.protocol.Str()+"://"+address, nil)
+	return WsConn{conn: conn}, err // DO NOT return conn.NetConn()
+}
+
+func (ws *WsManager) Listen(address string) (net.Listener, error) {
+	listener := &WsListener{ch: make(chan net.Conn)}
+	http.Handle(ws.wsPath, listener)
+	go func() {
+		if err := http.ListenAndServe(address, nil); err != nil {
+			panic(err)
+		}
+	}()
+	return listener, nil
+}
+
+func NewWsDialer(protocol ProtocolType) Dialer {
+	return &WsManager{protocol: protocol}
+}
+
+func NewWsListener(wsPath string) Listener {
+	return &WsManager{wsPath: wsPath}
+}
