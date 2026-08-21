@@ -1,12 +1,15 @@
 package transport
 
-import "net"
+import (
+	"net"
+)
 
 const (
-	TCP ProtocolType = "tcp"
-	TLS ProtocolType = "tls"
-	WS  ProtocolType = "ws"
-	WSS ProtocolType = "wss"
+	HTTP2 ProtocolType = "http2"
+	TCP   ProtocolType = "tcp"
+	TLS   ProtocolType = "tls"
+	WS    ProtocolType = "ws"
+	WSS   ProtocolType = "wss"
 )
 
 type Dialer interface {
@@ -31,6 +34,8 @@ func Dial(protocol ProtocolType, address string) (net.Conn, error) {
 	var dialer Dialer
 
 	switch protocol {
+	case HTTP2:
+		dialer = NewHttp2Dialer()
 	case TLS:
 		dialer = NewTlsDialer()
 	case WS, WSS:
@@ -51,6 +56,8 @@ func Listen(
 ) (net.Listener, error) {
 	var listener Listener
 	switch protocol {
+	case HTTP2:
+		listener = NewHttp2Listener(wsPath)
 	case TLS:
 		listener = NewTlsListener(tlsCertPath, tlsKeyPath)
 	case WS:
