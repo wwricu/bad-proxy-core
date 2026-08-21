@@ -11,10 +11,11 @@ import (
 type ProtocolType string
 
 const (
-	TCP ProtocolType = "tcp"
-	TLS ProtocolType = "tls"
-	WS  ProtocolType = "ws"
-	WSS ProtocolType = "wss"
+	HTTP2 ProtocolType = "http2"
+	TCP   ProtocolType = "tcp"
+	TLS   ProtocolType = "tls"
+	WS    ProtocolType = "ws"
+	WSS   ProtocolType = "wss"
 )
 
 func (protocol ProtocolType) Str() string {
@@ -45,6 +46,25 @@ func Listen(
 	tlsKeyPath string,
 ) (listener net.Listener, err error) {
 	switch protocol {
+	case HTTP2:
+		listener := &Http2Listener{ch: make(chan net.Conn)}
+		http.Handle(wsPath, listener)
+
+		var protocols http.Protocols
+		protocols.SetUnencryptedHTTP2(true)
+
+		server := &http.Server{
+			Addr:      address,
+			Handler:   http.DefaultServeMux,
+			Protocols: &protocols,
+		}
+
+		go func() {
+			if err := server.ListenAndServe(); err != nil {
+				panic(err)
+			}
+		}()
+		return listener, nil
 	case TLS:
 		cert, err := tls.LoadX509KeyPair(tlsCertPath, tlsKeyPath)
 		if err != nil {
