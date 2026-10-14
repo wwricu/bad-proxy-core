@@ -1,58 +1,60 @@
 package protocols
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"io"
 	"log"
 	"math/big"
 	"net"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/wwricu/bad-proxy-core/structure"
 )
 
+/*
+Bad-Proxy-Transport v2.
+
++----------+------------+-----------+-----------+-----+-----+-----+------+-----+
+| HMAC     | confusion  | confusion | timestamp | dir | len | host| port | ... |
+| digest   | length     | bytes     |           |     |     |     | (2B) |     |
++----------+------------+-----------+-----------+-----+-----+-----+------+-----+
+|    32    |     1      |    0-64   |     4     |  1  |  1  | Var |  2   |     |
+
+The HMAC-SHA256 over the header authenticates the request and, together with
+the timestamp window plus the digest replay cache, stops replays. The body
+after the header is the raw relayed stream: integrity of payload bytes is
+delegated to the transport (TLS), as in VLESS/Trojan.
+
+v1 computed the digest over "header + first payload segment", which required
+the whole segment to arrive in a single TCP read and made the receiver's
+buffer length part of the authentication input - fragmented connections
+failed intermittently. v2 binds the header only and streams cleanly.
+*/
+
 const (
-	btpDigestLen       = 32
-	btpConfusionLenDig = 1
-	btpTimestampLen    = 4
-	btpDirectiveDig    = 1
-	btpHostLenDig      = 1
-	btpPortLen         = 2
-	btpHeaderLen       = btpDigestLen +
-		btpConfusionLenDig +
-		btpTimestampLen +
-		btpHostLenDig +
-		btpDirectiveDig +
-		btpPortLen
-	timeThreshold      = 210
-	btpMaxConfusionLen = 64
-	btpTimeDiffRand    = 30
-	btpBufferSize      = 4096
+	btpDigestLen    = 32
+	btpTimestampLen = 4
+	btpDirective    = 1
+	timeThreshold   = 210
+	maxConfusion    = 64
+	maxBtpHostLen   = 255
+	timeDiffRand    = 30
 )
 
-type BTPRequest struct {
-	Address      string
-	Payload      []byte
-	digest       string
-	confusionLen int
-	timeDiff     int
-	headerLen    int
-	rawData      []byte
-}
-
-var btpLRU *structure.LRU[string]
-var once sync.Once
+var (
+	btpLRU     *structure.LRU[string]
+	btpLRUOnce sync.Once
+)
 
 func GetBtpCache() *structure.LRU[string] {
-	once.Do(func() {
+	btpLRUOnce.Do(func() {
 		instance := &structure.LRU[string]{}
 		instance.Init(210000)
 		btpLRU = instance
@@ -60,172 +62,189 @@ func GetBtpCache() *structure.LRU[string] {
 	return btpLRU
 }
 
-func (request *BTPRequest) validate(secret string) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Println(r)
-		}
-	}()
-	if request.confusionLen < 0 || request.confusionLen > btpMaxConfusionLen {
+// btpHeader is the parsed, not yet authenticated, request head.
+type btpHeader struct {
+	digest       []byte
+	confusion    []byte
+	timestamp    uint32
+	host         string
+	port         uint16
+	signedRegion []byte // everything after the digest, input of the HMAC
+}
+
+func (h *btpHeader) validate(secret string) error {
+	if len(h.confusion) > maxConfusion {
 		return errors.New("unexpected confusion length")
 	}
-	if request.timeDiff < -timeThreshold || timeThreshold < request.timeDiff {
+	diff := int(time.Now().Unix()) - int(h.timestamp)
+	if diff < -timeThreshold || timeThreshold < diff {
 		return errors.New("timeout or replay attack")
 	}
-
-	h := hmac.New(sha256.New, []byte(secret))
-	h.Write(request.rawData[btpDigestLen:])
-	if hex.EncodeToString(h.Sum(nil)) != request.digest {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(h.signedRegion)
+	if !hmac.Equal(mac.Sum(nil), h.digest) {
 		return errors.New("digest mismatch, unauthorized connect")
 	}
-
-	if err = GetBtpCache().Add(request.digest); err != nil {
-		return
-	}
-
-	if request.headerLen != btpHeaderLen {
-		return errors.New("wrong btp head len")
-	}
-
-	return
+	return GetBtpCache().Add(hex.EncodeToString(h.digest))
 }
 
-func parseBtpRequest(rawData []byte) (request *BTPRequest, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			request.Payload = rawData // restore raw data
-			log.Println(r)
+func readBtpHeader(in *Buffered) (*btpHeader, error) {
+	header := &btpHeader{}
+	digest, err := in.ReadFull(btpDigestLen)
+	if err != nil {
+		return nil, err
+	}
+	header.digest = digest
+
+	confusionLen, err := in.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+	if confusionLen > maxConfusion {
+		return nil, errors.New("bad confusion length")
+	}
+	signed := make([]byte, 0, 96)
+	signed = append(signed, confusionLen)
+	header.signedRegion = signed
+
+	if confusionLen > 0 {
+		confusion, err := in.ReadFull(int(confusionLen))
+		if err != nil {
+			return nil, err
 		}
-	}()
-	request = &BTPRequest{}
-	request.digest = hex.EncodeToString(rawData[:btpDigestLen])
-	request.confusionLen = int(rawData[btpDigestLen]) // uint8
+		header.confusion = confusion
+		header.signedRegion = append(header.signedRegion, confusion...)
+	}
 
-	pos := btpDigestLen + btpConfusionLenDig + request.confusionLen
-	timestamp := binary.BigEndian.Uint32(rawData[pos : pos+btpTimestampLen])
-	request.timeDiff = int(time.Now().Unix()) - int(timestamp)
+	stamp, err := in.ReadFull(btpTimestampLen + 1) // timestamp + directive
+	if err != nil {
+		return nil, err
+	}
+	header.timestamp = binary.BigEndian.Uint32(stamp[:btpTimestampLen])
+	header.signedRegion = append(header.signedRegion, stamp...)
 
-	pos += btpTimestampLen + btpDirectiveDig
-	hostLen := int(rawData[pos])
-	pos += btpHostLenDig
-	host := string(rawData[pos : pos+hostLen])
-	pos += hostLen // possible out of bound
-	port := strconv.Itoa(int(binary.BigEndian.Uint16(rawData[pos : pos+btpPortLen])))
-	pos += btpPortLen
+	hostLen, err := in.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+	if hostLen == 0 || hostLen > maxBtpHostLen {
+		return nil, errors.New("bad host length")
+	}
+	host, err := in.ReadFull(int(hostLen))
+	if err != nil {
+		return nil, err
+	}
+	header.host = string(host)
+	header.signedRegion = append(header.signedRegion, hostLen)
+	header.signedRegion = append(header.signedRegion, host...)
 
-	request.headerLen = pos - request.confusionLen - hostLen
-	request.Address = host + ":" + port
-	request.Payload = rawData[pos:]
-	request.rawData = rawData
-	return request, nil
+	port, err := in.ReadUint16()
+	if err != nil {
+		return nil, err
+	}
+	header.port = port
+	header.signedRegion = append(header.signedRegion, byte(port>>8), byte(port))
+	return header, nil
 }
 
-func encodeBtpRequest(address string, payload []byte, secret string) (res []byte, err error) {
-	bytesBuffer := bytes.NewBuffer([]byte{})
-	confusionLen, err := rand.Int(rand.Reader, big.NewInt(btpMaxConfusionLen))
+// encodeBtpHeader builds the digest-prefixed header; the caller writes the
+// relayed payload afterwards.
+func encodeBtpHeader(address string, secret string) ([]byte, error) {
+	host, portStr, err := net.SplitHostPort(address)
 	if err != nil {
-		return
+		return nil, err
 	}
-	confusion := make([]byte, int(confusionLen.Int64()))
-	n, err := rand.Read(confusion)
-	if n != int(confusionLen.Int64()) || err != nil {
-		return
-	}
-
-	timeDiff, err := rand.Int(rand.Reader, big.NewInt(2*btpTimeDiffRand))
+	port, err := strconv.ParseUint(portStr, 10, 16)
 	if err != nil {
-		return
+		return nil, err
 	}
-	timestamp := time.Now().Unix() + timeDiff.Int64() - btpTimeDiffRand // time +-30
+	if len(host) == 0 || len(host) > maxBtpHostLen {
+		return nil, errors.New("bad host length")
+	}
 
-	hnp := strings.Split(address, ":")
-	host := []byte(hnp[0])
-	port, err := strconv.ParseUint(hnp[1], 10, 16)
+	confusionLen, err := rand.Int(rand.Reader, big.NewInt(maxConfusion+1))
 	if err != nil {
-		return
+		return nil, err
 	}
+	n := int(confusionLen.Int64())
+	confusion := make([]byte, n)
+	if _, err = io.ReadFull(rand.Reader, confusion); err != nil {
+		return nil, err
+	}
+	offset, err := rand.Int(rand.Reader, big.NewInt(2*timeDiffRand))
+	if err != nil {
+		return nil, err
+	}
+	timestamp := time.Now().Unix() + offset.Int64() - timeDiffRand
 
-	_ = binary.Write(bytesBuffer, binary.BigEndian, uint8(confusionLen.Uint64()))
-	_ = binary.Write(bytesBuffer, binary.BigEndian, confusion)
-	_ = binary.Write(bytesBuffer, binary.BigEndian, uint32(timestamp))
-	_ = binary.Write(bytesBuffer, binary.BigEndian, uint8(1)) // directive
-	_ = binary.Write(bytesBuffer, binary.BigEndian, uint8(len(host)))
-	_ = binary.Write(bytesBuffer, binary.BigEndian, host)
-	_ = binary.Write(bytesBuffer, binary.BigEndian, uint16(port))
-	_ = binary.Write(bytesBuffer, binary.BigEndian, payload)
+	header := make([]byte, 0, 1+n+5+1+len(host)+2)
+	header = append(header, byte(n))
+	header = append(header, confusion...)
+	stamp := make([]byte, 4)
+	binary.BigEndian.PutUint32(stamp, uint32(timestamp))
+	header = append(header, stamp...)
+	header = append(header, btpDirective, byte(len(host)))
+	header = append(header, host...)
+	header = append(header, byte(port>>8), byte(port))
 
-	body := bytesBuffer.Bytes()
-
-	h := hmac.New(sha256.New, []byte(secret))
-	h.Write(body)
-	digest := h.Sum(nil)
-	res = append(digest, body...)
-	return
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(header)
+	return append(mac.Sum(nil), header...), nil
 }
 
 type BtpInbound struct {
-	Conn   net.Conn
-	Secret string
+	*Buffered
+	secrets []string
+	// probe keeps the first bytes before the handshake consumes them; the
+	// fallback page must recognize an HTTP GET that failed header parsing.
+	probe []byte
 }
 
-func (inbound *BtpInbound) Fallback(rawData []byte) {
-	if _, err := parseHttpRequest(rawData); err != nil {
-		return
+func NewBtpInbound(conn net.Conn, secrets []string) *BtpInbound {
+	return &BtpInbound{Buffered: NewBuffered(conn), secrets: secrets}
+}
+
+func (in *BtpInbound) Connect() (targetAddr string, err error) {
+	in.probe = in.Peek(8)
+	if LooksLikeHttpRequest(in.probe) {
+		// a web probe can never be a BTP handshake; fail now so Fallback()
+		// answers while the client is still connected
+		return "", errors.New("http probe")
 	}
-	page := []byte("<html><body><a href=\"https://wwr.icu\">Please login<a>\r\n</body></html>")
-	header := []byte("HTTP/1.1 200 OK\r\nContent-Type:text/html\r\nContent-Length:" + strconv.Itoa(len(page)) + "Connection: close \r\n\r\n")
-	_, _ = inbound.Write(append(header, page...))
-}
-
-func (inbound *BtpInbound) Connect() (targetAddr string, payload []byte, err error) {
-	payload = make([]byte, btpBufferSize) // return rawData on error
-	length, err := inbound.Conn.Read(payload)
+	header, err := readBtpHeader(in.Buffered)
 	if err != nil {
-		return
+		return "", err
 	}
-	request, err := parseBtpRequest(payload[:length])
-	if err != nil {
-		return
+	for _, secret := range in.secrets {
+		if err = header.validate(secret); err == nil {
+			return net.JoinHostPort(header.host, strconv.Itoa(int(header.port))), nil
+		}
 	}
-	if err = request.validate(inbound.Secret); err != nil { // try to handle http connection
-		return
-	}
-	return request.Address, request.Payload, nil
+	return "", err
 }
 
-func (inbound *BtpInbound) Read(b []byte) (int, error) {
-	return inbound.Conn.Read(b)
-}
-
-func (inbound *BtpInbound) Write(b []byte) (int, error) {
-	return inbound.Conn.Write(b)
-}
-
-func (inbound *BtpInbound) Close() error {
-	return inbound.Conn.Close()
+func (in *BtpInbound) Fallback() {
+	if LooksLikeHttpRequest(in.probe) {
+		ServeFallbackPage(in.Buffered)
+		return
+	}
+	log.Println("btp inbound: unauthorized probe")
 }
 
 type BtpOutbound struct {
-	Conn   net.Conn
-	Secret string
+	*Buffered
+	secret string
 }
 
-func (outbound *BtpOutbound) Connect(targetAddr string, payload []byte) (err error) {
-	if payload, err = encodeBtpRequest(targetAddr, payload, outbound.Secret); err != nil {
-		return
+func NewBtpOutbound(conn net.Conn, secret string) *BtpOutbound {
+	return &BtpOutbound{Buffered: NewBuffered(conn), secret: secret}
+}
+
+func (out *BtpOutbound) Connect(targetAddr string) error {
+	header, err := encodeBtpHeader(targetAddr, out.secret)
+	if err != nil {
+		return err
 	}
-	_, err = outbound.Conn.Write(payload)
-	return
-}
-
-func (outbound *BtpOutbound) Read(b []byte) (int, error) {
-	return outbound.Conn.Read(b)
-}
-
-func (outbound *BtpOutbound) Write(b []byte) (int, error) {
-	return outbound.Conn.Write(b)
-}
-
-func (outbound *BtpOutbound) Close() error {
-	return outbound.Conn.Close()
+	_, err = out.Write(header)
+	return err
 }

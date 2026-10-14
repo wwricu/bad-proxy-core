@@ -2,14 +2,26 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
+	"net"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/wwricu/bad-proxy-core/router"
-	"github.com/wwricu/bad-proxy-core/transport"
 )
+
+const relayBufferSize = 64 * 1024
+
+var relayBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, relayBufferSize)
+		return &buf
+	},
+}
 
 type Proxy struct {
 	inbounds  []Inbound
@@ -25,20 +37,20 @@ type Config struct {
 }
 
 const (
-	BTP    = "btp"
-	SOCKS  = "socks"
-	HTTP   = "http"
-	TROJAN = "trojan"
+	BTP     = "btp"
+	SOCKS   = "socks"
+	HTTP    = "http"
+	TROJAN  = "trojan"
+	VLESS   = "vless"
+	FREEDOM = "freedom"
 )
 
-func newProxy(config Config) (newProxy Proxy) {
+func newProxy(config Config) (newProxy Proxy, err error) {
 	newProxy.outbounds = make(map[string]*Outbound, 10)
 	newProxy.routers = make([]router.Router, 0)
 	for _, r := range config.Router {
 		rules := make([]string, 0)
-		for _, rule := range r.Rules {
-			rules = append(rules, rule)
-		}
+		rules = append(rules, r.Rules...)
 		newRouter, err := router.NewRouter(r.Tag, rules, config.RouterPath)
 		if err != nil {
 			log.Println("wrong router:", r.Tag)
@@ -48,116 +60,128 @@ func newProxy(config Config) (newProxy Proxy) {
 	}
 
 	for _, in := range config.Inbounds {
-		newInbound := Inbound{
-			secret:      in.Secret,
-			address:     in.Host + ":" + in.Port,
-			protocol:    in.Protocol,
-			transport:   transport.GetProtocol(in.Transport),
-			wsPath:      in.WsPath,
-			tlsCertPath: in.TlsCertPath,
-			tlsKeyPath:  in.TlsKeyPath,
-		}
-		newProxy.inbounds = append(newProxy.inbounds, newInbound)
+		newProxy.inbounds = append(newProxy.inbounds, NewInbound(in))
 	}
 
 	for _, out := range config.Outbounds {
-		newOutbound := Outbound{
-			tag:       out.Tag,
-			secret:    out.Secret,
-			address:   out.Host + ":" + out.Port,
-			protocol:  out.Protocol,
-			transport: transport.GetProtocol(out.Transport),
-			wsPath:    out.WsPath,
-		}
-		_, exist := newProxy.outbounds[out.Tag]
-		if exist == true {
-			log.Fatalln("duplicate outbound tag")
+		newOutbound := NewOutbound(out)
+		if _, exist := newProxy.outbounds[out.Tag]; exist {
+			return Proxy{}, errors.New("duplicate outbound tag " + out.Tag)
 		}
 		newProxy.outbounds[out.Tag] = &newOutbound
 	}
 
 	if _, exist := newProxy.outbounds[""]; exist != true {
-		log.Fatalln("No Default outbound!")
+		return Proxy{}, errors.New("no default outbound, add one with empty \"tag\" (use \"" + FREEDOM + "\" for direct)")
 	}
 	return
 }
 
 func (proxy Proxy) Start() {
-	for _, inbound := range proxy.inbounds {
-		go func(inbound Inbound) { // TODO: Why reference pass does not work.
-			log.Println(inbound.protocol, "listen on", inbound.address)
-			err := inbound.Listen()
-			if err != nil {
-				log.Fatalf("inbound on %s dead, %s\n", inbound.address, err.Error())
+	for i := range proxy.inbounds {
+		inbound := proxy.inbounds[i]
+		go func(inbound *Inbound) {
+			if err := inbound.Listen(); err != nil {
+				// one broken inbound must not take the whole process down
+				log.Printf("inbound on %s disabled: %v\n", inbound.address, err)
 				return
 			}
-			for {
-				in, err := inbound.Accept()
-				if err != nil {
-					log.Printf("inbound on %s failed to accept!\n", inbound.address)
-					continue
-				}
-				go proxy.proxy(in)
+			log.Printf("%s listen on %s\n", inbound.protocol, inbound.address)
+			proxy.serve(inbound)
+		}(&inbound)
+	}
+}
+
+func (proxy Proxy) serve(inbound *Inbound) {
+	failures := 0
+	for {
+		in, err := inbound.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				log.Printf("inbound on %s closed\n", inbound.address)
+				return
 			}
-		}(inbound)
+			failures++
+			if failures > 32 {
+				log.Printf("inbound on %s giving up after repeated errors\n", inbound.address)
+				return
+			}
+			time.Sleep(50 * time.Millisecond) // transient accept error
+			continue
+		}
+		failures = 0
+		go proxy.proxy(in)
 	}
 }
 
 func (proxy Proxy) proxy(in InboundConnect) {
-	defer func() { // recover any panic to avoid quiting from main loop.
+	defer func() {
 		if r := recover(); r != nil {
-			log.Println(r)
+			log.Println("relay panic:", r)
 		}
 		_ = in.Close()
 	}()
 
-	address, payload, err := in.Connect() // handshake
+	address, err := in.Connect() // handshake
 	if err != nil {
 		log.Println("inbound connect failed:", err)
-		in.Fallback(payload)
+		in.Fallback()
 		return
 	}
-	// routing to find outbound template
+	_ = in.SetDeadline(time.Time{}) // relay phase runs without handshake deadline
+
 	outbound := proxy.route(address)
-	out, err := outbound.Dial(address, payload) // handshake
-	defer func() {
-		_ = out.Close()
-	}()
+	out, err := outbound.Dial(address)
 	if err != nil {
 		log.Printf("outbound dial to %s failed, err=%v\n", address, err)
 		return
 	}
+	defer func() {
+		_ = out.Close()
+	}()
 
 	done := make(chan struct{})
 	go func() {
-		if _, err := io.Copy(in, out); err != nil {
+		defer close(done)
+		if _, err := relayCopy(in, out); err != nil && !errors.Is(err, net.ErrClosed) {
 			log.Printf("copy out->in: %v\n", err)
 		}
-		close(done)
 	}()
-	if _, err = io.Copy(out, in); err != nil {
+	if _, err = relayCopy(out, in); err != nil && !errors.Is(err, net.ErrClosed) {
 		log.Printf("copy in->out: %v\n", err)
 	}
-
 	<-done
 }
 
+// relay buffers come from a pool. The thin wrappers hide ReadFrom/WriteTo
+// so io.CopyBuffer runs its plain chunked loop: on Windows the
+// TCPConn->TCPConn TransmitFile "splice" measured ~80 MB/s while a 64 KiB
+// buffered loop passes ~400 MB/s over the same loopback path.
+type plainWriter struct{ io.Writer }
+type plainReader struct{ io.Reader }
+
+func relayCopy(dst io.Writer, src io.Reader) (int64, error) {
+	buf := relayBufPool.Get().(*[]byte)
+	defer relayBufPool.Put(buf)
+	return io.CopyBuffer(plainWriter{dst}, plainReader{src}, *buf)
+}
+
 func (proxy Proxy) route(address string) Outbound {
-	// If s does not contain sep and sep is not empty,
-	// Split returns a slice of length 1 whose only element is s
 	tag := ""
-	host := strings.Split(address, ":")[0]
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = strings.Split(address, ":")[0]
+	}
 	for _, r := range proxy.routers {
-		if r.MatchAny(host) == true {
+		if r.MatchAny(host) {
 			tag = r.Tag
 			break
 		}
 	}
-	outbound, exist := proxy.outbounds[tag]
-	if exist == false {
-		return *proxy.outbounds[""]
+	if outbound, exist := proxy.outbounds[tag]; exist {
+		return *outbound
 	}
-	return *outbound
+	return *proxy.outbounds[""]
 }
 
 func readConfig(path string) (config Config, err error) {
@@ -179,6 +203,10 @@ func Startup(configPath string, routerPath string) (err error) {
 	}
 
 	config.RouterPath = routerPath
-	newProxy(config).Start()
+	p, err := newProxy(config)
+	if err != nil {
+		return
+	}
+	p.Start()
 	return
 }

@@ -35,9 +35,14 @@ func NewFullMatcher(fullDomains []string) Matcher {
 type RegexMatcher []*regexp.Regexp
 
 func NewRegexMatcher(regexStrings []string) Matcher {
-	var regexMatcher RegexMatcher = make([]*regexp.Regexp, len(regexStrings))
-	for i, ex := range regexStrings {
-		regexMatcher[i] = regexp.MustCompile(ex)
+	var regexMatcher RegexMatcher = make([]*regexp.Regexp, 0, len(regexStrings))
+	for _, ex := range regexStrings {
+		compiled, err := regexp.Compile(ex)
+		if err != nil {
+			log.Println("bad rule regex, skipped:", ex)
+			continue
+		}
+		regexMatcher = append(regexMatcher, compiled)
 	}
 	return regexMatcher
 }

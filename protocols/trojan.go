@@ -1,14 +1,10 @@
 package protocols
 
 import (
-	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"net"
-	"strconv"
-	"strings"
 )
 
 /*
@@ -20,171 +16,99 @@ https://trojan-gfw.github.io/trojan/protocol.html
 |          56           | X'0D0A' |    Variable    | X'0D0A' | Variable |
 +-----------------------+---------+----------------+---------+----------+
 
-where Trojan Request is a SOCKS5-like request:
-
-+-----+------+----------+----------+
-| CMD | ATYP | DST.ADDR | DST.PORT |
-+-----+------+----------+----------+
-|  1  |  1   | Variable |    2     |
-+-----+------+----------+----------+
-
-where:
-o  CMD
-	o  CONNECT X'01'
-	o  UDP ASSOCIATE X'03'
-o  ATYP address type of following address
-	o  IP V4 address: X'01'
-	o  DOMAINNAME: X'03'
-	o  IP V6 address: X'04'
-o  DST.ADDR desired destination address
-o  DST.PORT desired destination port in network octet order
+Trojan Request is a SOCKS5-like request (CMD/ATYP/DST.ADDR/DST.PORT);
+only CMD CONNECT is supported.
 */
 
-const (
-	HashLen          = 56
-	trojanBufferSize = 4096
-	IPv4             = 0x01
-	Domain           = 0x03
-	IPv6             = 0x04
-)
+const HashLen = 56
 
 type TrojanInbound struct {
-	Conn     net.Conn
-	Password string
+	*Buffered
+	passwords []string
 }
 
-type TrojanRequest struct {
-	cmd  uint8
-	atyp uint8
-	addr net.Addr
-	port uint16
+func NewTrojanInbound(conn net.Conn, passwords []string) *TrojanInbound {
+	return &TrojanInbound{Buffered: NewBuffered(conn), passwords: passwords}
 }
 
-func (inbound *TrojanInbound) Connect() (targetAddr string, payload []byte, err error) {
-	payload = make([]byte, trojanBufferSize) // return rawdata on error
-	length, err := inbound.Conn.Read(payload)
+func trojanHash(password string) string {
+	hasher := sha256.New224()
+	hasher.Write([]byte(password))
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func (in *TrojanInbound) Connect() (targetAddr string, err error) {
+	head, err := in.ReadFull(HashLen + 2)
 	if err != nil {
 		return
 	}
-
-	ptr := 0
-	hasher := sha256.New224()
-	hasher.Write([]byte(inbound.Password))
-	hash := hasher.Sum(nil)
-
-	if !bytes.Equal([]byte(hex.EncodeToString(hash)), payload[ptr:ptr+HashLen]) {
-		err = errors.New("password mismatch")
-		return
+	if string(head[HashLen:]) != "\r\n" {
+		return "", errors.New("malformed trojan header")
+	}
+	authorized := false
+	want := make([]byte, HashLen)
+	for _, password := range in.passwords {
+		copy(want, trojanHash(password))
+		if subtleEqual(head[:HashLen], want) {
+			authorized = true
+			break
+		}
+	}
+	if !authorized {
+		return "", errors.New("password mismatch")
 	}
 
-	ptr += HashLen + 2 // HashLen + CRLF
-
-	cmd := payload[ptr]
-	ptr += 1
+	cmd, err := in.ReadByte()
+	if err != nil {
+		return
+	}
 	if cmd != 0x01 {
-		err = errors.New("cmd is not connect")
+		return "", errors.New("cmd is not connect")
+	}
+	if targetAddr, err = in.DecodeTarget(TargetCodingSocks); err != nil {
 		return
 	}
-
-	atyp := payload[ptr]
-	ptr += 1
-
-	var addr string
-	if atyp == IPv4 {
-		addr = net.IP(payload[ptr : ptr+net.IPv4len]).String()
-		ptr += net.IPv4len
-	} else if atyp == Domain {
-		domainLen := int(payload[ptr])
-		ptr += 1
-		addr = string(payload[ptr : ptr+domainLen])
-		ptr += domainLen
-	} else if atyp == IPv6 {
-		addr = net.IP(payload[ptr : ptr+net.IPv6len]).String()
-		ptr += net.IPv6len
-	} else {
-		err = errors.New("unknown ATYP " + strconv.Itoa(int(payload[ptr])))
+	crlf, err := in.ReadFull(2)
+	if err != nil {
 		return
 	}
-
-	port := int(payload[ptr])*256 + int(payload[ptr+1])
-	ptr += 4 // Port + CRLF
-
-	// HAVE TO specify the end of payload otherwise packages would be combined,
-	// then SSL_ERROR_PROTOCOL_VERSION_ALERT is shown
-	// Furthermore, trojanBufferSize have to be about 2kb to make HTTPS via wss work
-	// TODO: WHY HTTPS via Trojan on TLS works and HTTP via Trojan on wss does not without length or big buffer
-	return addr + ":" + strconv.Itoa(port), payload[ptr:length], err
+	if string(crlf) != "\r\n" {
+		return "", errors.New("missing trojan request terminator")
+	}
+	return targetAddr, nil
 }
 
-func (inbound *TrojanInbound) Fallback(rawData []byte) {
-	_ = rawData
-}
-
-func (inbound *TrojanInbound) Read(b []byte) (int, error) {
-	return inbound.Conn.Read(b)
-}
-
-func (inbound *TrojanInbound) Write(b []byte) (int, error) {
-	return inbound.Conn.Write(b)
-}
-
-func (inbound *TrojanInbound) Close() error {
-	return inbound.Conn.Close()
-}
+func (in *TrojanInbound) Fallback() {}
 
 type TrojanOutbound struct {
-	Conn     net.Conn
-	Password string
+	*Buffered
+	password string
 }
 
-func (outbound *TrojanOutbound) Connect(targetAddr string, payload []byte) (err error) {
-	bytesBuffer := bytes.NewBuffer([]byte{})
+func NewTrojanOutbound(conn net.Conn, password string) *TrojanOutbound {
+	return &TrojanOutbound{Buffered: NewBuffered(conn), password: password}
+}
 
-	hasher := sha256.New224()
-	hasher.Write([]byte(outbound.Password))
-	hash := hasher.Sum(nil)
-
-	_ = binary.Write(bytesBuffer, binary.BigEndian, []byte(hex.EncodeToString(hash)))
-	_ = binary.Write(bytesBuffer, binary.BigEndian, []byte("\r\n"))
-
-	hnp := strings.Split(targetAddr, ":")
-	host := []byte(hnp[0])
-	port, err := strconv.ParseUint(hnp[1], 10, 16)
-	if err != nil {
-		return
+func (out *TrojanOutbound) Connect(targetAddr string) error {
+	request := make([]byte, 0, 96)
+	request = append(request, trojanHash(out.password)...)
+	request = append(request, '\r', '\n', 0x01)
+	writer := addressWriter{w: &request}
+	if err := EncodeTarget(writer, targetAddr, TargetCodingSocks); err != nil {
+		return err
 	}
+	request = append(request, '\r', '\n')
+	_, err := out.Write(request)
+	return err
+}
 
-	atyp := IPv6
-	ip := net.ParseIP(string(host))
-	if ip == nil {
-		atyp = Domain
-	} else if ip.To4() != nil {
-		atyp = IPv4
+func subtleEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
 	}
-
-	_ = binary.Write(bytesBuffer, binary.BigEndian, uint8(1))    // cmd
-	_ = binary.Write(bytesBuffer, binary.BigEndian, uint8(atyp)) // atyp
-	if atyp == Domain {
-		_ = binary.Write(bytesBuffer, binary.BigEndian, uint8(len(host)))
+	var v byte
+	for i := range a {
+		v |= a[i] ^ b[i]
 	}
-	_ = binary.Write(bytesBuffer, binary.BigEndian, host)
-	_ = binary.Write(bytesBuffer, binary.BigEndian, uint16(port))
-	_ = binary.Write(bytesBuffer, binary.BigEndian, []byte("\r\n"))
-
-	_ = binary.Write(bytesBuffer, binary.BigEndian, payload)
-
-	_, err = outbound.Conn.Write(bytesBuffer.Bytes())
-	return
-}
-
-func (outbound *TrojanOutbound) Read(b []byte) (int, error) {
-	return outbound.Conn.Read(b)
-}
-
-func (outbound *TrojanOutbound) Write(b []byte) (int, error) {
-	return outbound.Conn.Write(b)
-}
-
-func (outbound *TrojanOutbound) Close() error {
-	return outbound.Conn.Close()
+	return v == 0
 }

@@ -2,88 +2,191 @@ package protocols
 
 import (
 	"bytes"
-	"fmt"
+	"errors"
 	"net"
 	"net/url"
 	"strings"
 )
 
-type HTTPRequest struct {
-	Method  string
-	url     string
-	Address string
-	Payload []byte
+// HTTP inbound supports the two shapes a proxy client sends:
+//
+//	CONNECT host:port HTTP/1.1        (tunnel, then raw bytes)
+//	METHOD scheme://host/path HTTP/1.1 (plain proxy, absolute-form)
+//
+// The request head is read field by field from the buffered stream, so a
+// header split across TCP segments no longer truncates the parse. For
+// non-CONNECT requests the original absolute-form request line is relayed to
+// the target unchanged; origin servers are required to accept it (RFC 7230
+// 5.4) and in practice do.
+type HttpRequest struct {
+	Method         string
+	Address        string
+	originFormLine string
 }
 
-func parseHttpRequest(buffer []byte) (request HTTPRequest, err error) {
-	if _, err = fmt.Sscanf(
-		string(buffer[:bytes.IndexByte(buffer[:], '\n')]),
-		"%s%s",
-		&request.Method,
-		&request.url,
-	); err != nil {
-		return
-	}
-	hostPortURL, err := url.Parse(request.url)
-	if err != nil { // Just believe url is an ip when parsing failed, leave err behind.
-		request.Address = request.url
-	} else if len(hostPortURL.Host) == 0 { // for opaque urls.
-		request.Address = hostPortURL.Scheme + ":" + hostPortURL.Opaque
-	} else { // url parsed successfully.
-		request.Address = hostPortURL.Host
-	}
+const maxHttpHeadBytes = 16 * 1024
 
-	if strings.Index(request.Address, ":") == -1 {
-		request.Address = request.Address + ":80"
+func readRequestHead(in *Buffered) (HttpRequest, []byte, error) {
+	var raw bytes.Buffer
+	line, err := readCrlfLine(in, maxHttpHeadBytes)
+	if err != nil {
+		return HttpRequest{}, nil, err
 	}
+	raw.WriteString(line)
+	raw.WriteString("\r\n")
+	parts := strings.SplitN(line, " ", 3)
+	if len(parts) != 3 {
+		return HttpRequest{}, nil, errors.New("malformed request line: " + line)
+	}
+	request := HttpRequest{Method: parts[0]}
+	if request.Address, err = targetFromRequestUri(parts[1], parts[0]); err != nil {
+		return HttpRequest{}, nil, err
+	}
+	request.originFormLine = strings.Join([]string{parts[0], originFormTarget(parts[1]), parts[2]}, " ")
+	// drain the remaining header lines
+	for {
+		l, err := readCrlfLine(in, maxHttpHeadBytes)
+		if err != nil {
+			return HttpRequest{}, nil, err
+		}
+		raw.WriteString(l)
+		raw.WriteString("\r\n")
+		if l == "" {
+			break
+		}
+	}
+	return request, raw.Bytes(), nil
+}
 
-	request.Payload = buffer[bytes.Index(buffer[:], []byte("\r\n\r\n")):]
-	return
+// originFormTarget strips "scheme://host[:port]" from an absolute-form
+// request target, as the origin server must receive path-only URIs.
+func originFormTarget(target string) string {
+	if !strings.Contains(target, "://") {
+		return target
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return target
+	}
+	return u.RequestURI()
+}
+
+func readCrlfLine(in *Buffered, limit int) (string, error) {
+	var sb strings.Builder
+	atEol := false
+	for sb.Len() < limit {
+		b, err := in.ReadByte()
+		if err != nil {
+			return "", err
+		}
+		switch {
+		case atEol && b == '\n':
+			return sb.String(), nil
+		case b == '\r':
+			atEol = true
+			continue
+		case atEol: // bare LF after non-CR, treat previous \r as data
+			sb.WriteByte('\r')
+			atEol = false
+			fallthrough
+		default:
+			sb.WriteByte(b)
+		}
+	}
+	return "", errors.New("http header line too long")
+}
+
+func targetFromRequestUri(target, method string) (string, error) {
+	var host string
+	if strings.Contains(target, "://") {
+		parsed, err := url.Parse(target)
+		if err != nil || parsed.Host == "" {
+			return "", errors.New("bad request target " + target)
+		}
+		host = parsed.Host
+		if parsed.Port() == "" {
+			host += ":" + schemePort(parsed.Scheme)
+		}
+	} else {
+		host = target
+		if !hasPort(host) {
+			defaultPort := "80"
+			if method == "CONNECT" {
+				defaultPort = "443"
+			}
+			host = host + ":" + defaultPort
+		}
+	}
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		return "", err
+	}
+	return host, nil
+}
+
+func schemePort(scheme string) string {
+	switch strings.ToLower(scheme) {
+	case "https", "wss":
+		return "443"
+	case "ftp":
+		return "21"
+	}
+	return "80"
+}
+
+func hasPort(host string) bool {
+	_, port, err := net.SplitHostPort(host)
+	return err == nil && port != "" && allDigits(port)
+}
+
+func allDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 type HttpInbound struct {
-	Conn net.Conn
+	*Buffered
 }
 
-func (inbound *HttpInbound) Fallback(rawData []byte) {
-	_ = rawData
+func NewHttpInbound(conn net.Conn) *HttpInbound {
+	return &HttpInbound{Buffered: NewBuffered(conn)}
 }
 
-func (inbound *HttpInbound) Connect() (targetAddr string, payload []byte, err error) {
-	payload = make([]byte, 8196)
-	length, err := inbound.Conn.Read(payload[:])
+func (in *HttpInbound) Connect() (targetAddr string, err error) {
+	request, rawHead, err := readRequestHead(in.Buffered)
 	if err != nil {
-		return
+		return "", err
 	}
-	request, err := parseHttpRequest(payload[:])
-	if err != nil {
-		return
-	}
-	targetAddr = request.Address
 	if request.Method == "CONNECT" {
-		var response = "HTTP/1.1 200 Connection Established\r\nConnection: close\r\n\r\n"
-		_, err = inbound.Conn.Write([]byte(response))
-		if err != nil {
-			return
+		if _, err = in.Write([]byte(
+			"HTTP/1.1 200 Connection Established\r\nProxy-agent: bad-proxy\r\n\r\n",
+		)); err != nil {
+			return "", err
 		}
-		payload = make([]byte, 8196) // clear
-		length, err = inbound.Conn.Read(payload)
-		if err != nil {
-			return
-		}
+		return request.Address, nil
 	}
-	payload = payload[:length]
-	return
+	// Plain proxy request: the origin server expects an origin-form request
+	// line (path only), so rewrite the head and re-inject it into the stream
+	// ahead of the body we have not read yet.
+	rewritten := originFormHead(rawHead, request.originFormLine)
+	in.PushFront(rewritten)
+	return request.Address, nil
 }
 
-func (inbound *HttpInbound) Read(b []byte) (int, error) {
-	return inbound.Conn.Read(b)
+// originFormHead replaces the request line inside the raw head with its
+// origin-form version, leaving the headers and CRLF terminator untouched.
+func originFormHead(rawHead []byte, originLine string) []byte {
+	end := bytes.Index(rawHead, []byte("\r\n"))
+	if end < 0 {
+		return rawHead
+	}
+	out := make([]byte, 0, len(rawHead))
+	out = append(out, originLine...)
+	out = append(out, rawHead[end:]...)
+	return out
 }
 
-func (inbound *HttpInbound) Write(b []byte) (int, error) {
-	return inbound.Conn.Write(b)
-}
-
-func (inbound *HttpInbound) Close() error {
-	return inbound.Conn.Close()
-}
+func (in *HttpInbound) Fallback() {}

@@ -1,12 +1,15 @@
-FROM debian:stable-slim
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+RUN go mod download || true
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/bad-proxy-core .
 
-ADD https://github.com/HerrKKK/bad_proxy_go/releases/latest/download/bad_proxy-linux-amd64.tar.gz /root
-
-RUN cd /root && tar xzvf bad_proxy-linux-amd64.tar.gz \
-&& mkdir /etc/bad_proxy && rm bad_proxy-linux-amd64.tar.gz \
-&& cp ./bad_proxy-linux-amd64 /usr/bin/bad_proxy \
-&& cp ./rules.dat /etc/bad_proxy/rules.dat \
-&& ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
-&& echo 'Asia/Shanghai' > /etc/timezone
-
-CMD ["/usr/bin/bad_proxy", "--config", "/etc/bad_proxy/config.json", "--router-path", "/etc/bad_proxy/rules.dat"]
+FROM alpine:3.20
+RUN mkdir -p /etc/bad-proxy
+COPY --from=build /out/bad-proxy-core /usr/bin/bad-proxy-core
+# mount your config at /etc/bad-proxy/config.json and (optionally) rules.dat
+# e.g. docker run -d -v ./config.json:/etc/bad-proxy/config.json:ro \
+#          -v ./rules.dat:/etc/bad-proxy/rules.dat:ro -p 443:443 bad-proxy-core
+EXPOSE 443
+CMD ["/usr/bin/bad-proxy-core", "--config", "/etc/bad-proxy/config.json", "--router-path", "/etc/bad-proxy/rules.dat"]
