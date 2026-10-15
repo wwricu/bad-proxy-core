@@ -64,10 +64,12 @@ The same binary is used on both ends; only the config differs.
       "host": "0.0.0.0",
       "port": "443",
       "users": ["01234567-89ab-4cde-8f01-23456789abcd"],
-      "transport": "xhttp",
-      "path": "/xrt",
-      "tls_cert_path": "/etc/bad-proxy/server.crt",
-      "tls_key_path": "/etc/bad-proxy/server.key"
+      "transport": {
+        "type": "xhttp",
+        "path": "/xrt",
+        "cert": "/etc/bad-proxy/server.crt",
+        "key": "/etc/bad-proxy/server.key"
+      }
     }
   ],
   "outbounds": [
@@ -90,11 +92,13 @@ The same binary is used on both ends; only the config differs.
       "secret": "01234567-89ab-4cde-8f01-23456789abcd",
       "host": "proxy.example.com",
       "port": "443",
-      "transport": "xhttp",
-      "path": "/xrt",
-      "tls": true,
-      "authority": "proxy.example.com",
-      "padding": "64-256"
+      "transport": {
+        "type": "xhttp",
+        "path": "/xrt",
+        "tls": true,
+        "authority": "proxy.example.com",
+        "padding": "64-256"
+      }
     }
   ]
 }
@@ -122,8 +126,9 @@ Trojan over `tls` (no xhttp) server inbound:
 
 ```json
 { "protocol": "trojan", "host": "0.0.0.0", "port": "443",
-  "secret": "your-password", "transport": "tls",
-  "tls_cert_path": "/etc/bad-proxy/server.crt", "tls_key_path": "/etc/bad-proxy/server.key" }
+  "secret": "your-password",
+  "transport": { "type": "tls",
+    "cert": "/etc/bad-proxy/server.crt", "key": "/etc/bad-proxy/server.key" } }
 ```
 
 BTP is BPC's native protocol: the secret is an HMAC key that is **never put on
@@ -166,9 +171,7 @@ is optional and falls back to the shown default.
 | `host`, `port` | all | listen address |
 | `users` | vless | list of UUIDs (also accepted: `secret` / `secrets`) |
 | `secret` / `secrets` | trojan, btp | password(s) / HMAC keys; several may be active at once |
-| `transport` | all | `tcp` (default), `tls`, `xhttp` |
-| `path` | xhttp | request path this inbound answers (others get 403) |
-| `tls_cert_path`, `tls_key_path` | tls, xhttp | enables TLS server-side |
+| `transport` | all | an object describing the hop — see [Transport object](#transport-object) |
 
 `socks` and `http` are client-facing inbounds (no credentials; bind them to
 loopback or protect them yourself). `http` accepts both `CONNECT` and
@@ -183,14 +186,29 @@ origin form before relaying, as RFC 7230 §5.4 requires of a proxy.
 | `protocol` | `vless`, `trojan`, `btp`, `socks`, `freedom` (default `btp`) |
 | `secret` | UUID (vless) / password (trojan) / HMAC key (btp) |
 | `host`, `port` | upstream address (ignored by `freedom`) |
-| `transport` | `tcp`, `tls`, `xhttp` |
-| `path` | xhttp request path |
-| `authority` | TLS SNI / `Host` header (defaults to `host`) |
-| `padding` | xhttp `X-Padding` random byte range, `"min-max"`; empty disables |
-| `tls` | client-side TLS (use with `xhttp` directly, or implies SNI handling) |
-| `insecure` | skip TLS certificate verification (testing only) |
+| `transport` | an object describing the hop — see [Transport object](#transport-object) |
 
 `freedom` dials targets directly — the outbound a server config uses.
+
+### Transport object
+
+The `transport` block is the one place that describes how bytes reach the peer;
+application-protocol fields stay separate from it. Each transport reads only the
+fields it uses; unknown ones are ignored. There is no `insecure` — the client
+always verifies the server certificate.
+
+```json
+"transport": { "type": "xhttp", "path": "/xrt", "tls": true, "authority": "host", "padding": "64-256" }
+```
+
+| field | applies to | meaning |
+|---|---|---|
+| `type` | all | `tcp` (default), `tls`, `xhttp` |
+| `path` | xhttp | request path; server answers it as a prefix (others get 403), client sends it |
+| `cert`, `key` | server, tls/xhttp | TLS cert + private key paths; presence is what enables server TLS (a server has no separate `tls` toggle) |
+| `tls` | client, xhttp | encrypt the hop (https scheme + TLS). Plaintext to a TLS port and vice-versa both fail, so the client must state it |
+| `authority` | client, tls/xhttp | SNI / `Host` override; defaults to `host` |
+| `padding` | client, xhttp | `X-Padding` random byte range `"min-max"`; unset uses the default `"50-200"`, an explicit `"0"` disables |
 
 ### Routing
 
@@ -308,8 +326,7 @@ Server config (see `config_server.json`):
       "host": "127.0.0.1",
       "port": "8081",
       "users": ["01234567-89ab-4cde-8f01-23456789abcd"],
-      "transport": "xhttp",
-      "path": "/xrt"
+      "transport": { "type": "xhttp", "path": "/xrt" }
     }
   ],
   "outbounds": [ { "protocol": "freedom" } ]
@@ -344,8 +361,9 @@ server {
 }
 ```
 
-Client config: `transport: xhttp`, `tls: true`, `host: proxy.example.com`,
-`port: "443"`, `path: /xrt`, matching `authority`. The client↔nginx hop is
+Client config: `transport: { type: xhttp, tls: true, path: /xrt, authority:
+proxy.example.com }`, `host: proxy.example.com`, `port: "443"`. The
+client↔nginx hop is
 real TLS (h2 or h1 by ALPN); nginx↔BPC is plaintext loopback, so
 `X-Sec-Mode`/`X-Session-Id` headers terminate cleanly and VLESS/Trojan/BTP
 handshakes run over the tunnel body.
@@ -457,10 +475,11 @@ Tested against Xray v26.3.27 on loopback (origin on `127.0.0.1:18000`):
 
 Xray's access log shows it authenticating BPC's requests, and BPC accepts
 Xray's. VLESS carries no encryption itself, so plain `tcp` is cleartext —
-prefer `tls` or nginx in real deployments. One caveat on current Xray
-builds: `allowInsecure` has been removed in favor of
-`pinnedPeerCertSha256`, so with a self-signed test cert the Xray side must
-pin the certificate hash while BPC uses its `insecure` flag. Trojan
+prefer `tls` or nginx in real deployments. One caveat on certificate handling:
+current Xray builds removed `allowInsecure` in favor of `pinnedPeerCertSha256`,
+and BPC likewise dropped its `insecure` option — the client always verifies the
+server certificate. So a `tls` interop test needs a CA the client trusts (or a
+pin on the Xray side); self-signed setups are easiest to drive over `tcp`. Trojan
 follows Xray's byte layout too (SOCKS atyp table, address before port —
 note this differs from VLESS's port-before-address), but BTP and BPC's
 xhttp are native protocols with no Xray counterpart.

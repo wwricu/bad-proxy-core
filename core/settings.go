@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/wwricu/bad-proxy-core/common"
 	"github.com/wwricu/bad-proxy-core/logger"
 )
 
@@ -33,10 +34,10 @@ type GeneralConfig struct {
 }
 
 const (
-	defaultHandshakeTimeout = 10 * time.Second
-	defaultDialTimeout      = 15 * time.Second
-	defaultRelayBufferKiB   = 64
-	maxRelayBufferKiB       = 1024
+	defaultHandshakeTimeout = common.DefaultHandshakeTimeout
+	defaultDialTimeout      = common.DefaultDialTimeout
+	defaultRelayBufferKiB   = common.DefaultRelayBufferKiB
+	maxRelayBufferKiB       = common.MaxRelayBufferKiB
 )
 
 // settings is GeneralConfig after validation, with defaults applied.

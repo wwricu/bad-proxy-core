@@ -10,17 +10,30 @@ import (
 	"github.com/wwricu/bad-proxy-core/transport"
 )
 
+// TransportConfig is the nested "transport" object shared by inbounds and
+// outbounds. It keeps transport concerns (type, path, TLS material, padding)
+// out of the application-protocol fields, so an endpoint reads as
+// protocol/secret/host/port plus a transport block. Each transport picks only
+// the fields it uses; the server derives plaintext-vs-TLS from cert/key being
+// set, so there is no separate server "tls" toggle.
+type TransportConfig struct {
+	Type      string `json:"type"`      // "tcp", "tls", "xhttp"
+	Path      string `json:"path"`      // xhttp request path
+	Authority string `json:"authority"` // client: SNI / Host override
+	Padding   string `json:"padding"`   // client xhttp: X-Padding range
+	Tls       bool   `json:"tls"`       // client: encrypt the hop
+	Cert      string `json:"cert"`      // server: TLS certificate path
+	Key       string `json:"key"`       // server: TLS private key path
+}
+
 type InboundConfig struct {
-	Protocol    string   `json:"protocol"`
-	Host        string   `json:"host"`
-	Port        string   `json:"port"`
-	Secret      string   `json:"secret"`
-	Secrets     []string `json:"secrets"`
-	Users       []string `json:"users"` // vless ids, merged into secrets
-	Transport   string   `json:"transport"`
-	Path        string   `json:"path"`
-	TlsCertPath string   `json:"tls_cert_path"`
-	TlsKeyPath  string   `json:"tls_key_path"`
+	Protocol  string          `json:"protocol"`
+	Host      string          `json:"host"`
+	Port      string          `json:"port"`
+	Secret    string          `json:"secret"`
+	Secrets   []string        `json:"secrets"`
+	Users     []string        `json:"users"` // vless ids, merged into secrets
+	Transport TransportConfig `json:"transport"`
 }
 
 func (c InboundConfig) credentials() []string {
@@ -54,12 +67,12 @@ func NewInbound(c InboundConfig, set settings) Inbound {
 		handshake: set.handshakeTimeout,
 		address:   address,
 		transport: transport.New(
-			transport.GetProtocol(c.Transport),
+			transport.GetProtocol(c.Transport.Type),
 			transport.Options{
 				Address:     address,
-				Path:        c.Path,
-				TlsCertPath: c.TlsCertPath,
-				TlsKeyPath:  c.TlsKeyPath,
+				Path:        c.Transport.Path,
+				TlsCertPath: c.Transport.Cert,
+				TlsKeyPath:  c.Transport.Key,
 			},
 		),
 	}

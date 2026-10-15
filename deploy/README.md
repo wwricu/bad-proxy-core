@@ -25,8 +25,8 @@ handle @btp { reverse_proxy { to http://bad_proxy:8444  flush_interval -1 } }
 BPC 侧 `config.json` 用**占位符**，部署时由 deploy 仓库的 workflow 从 GitHub Secrets 替换真实 UUID：
 
 ```json
-{ "protocol": "vless", "port": "8443", "transport": "xhttp", "path": "/bp", "users": ["{TROJAN_UUID}"] }
-{ "protocol": "btp",   "port": "8444", "transport": "xhttp", "path": "/btp", "secret": "{BTP_UUID}" }
+{ "protocol": "vless", "port": "8443", "users": ["{TROJAN_UUID}"], "transport": { "type": "xhttp", "path": "/bp" } }
+{ "protocol": "btp",   "port": "8444", "secret": "{BTP_UUID}",     "transport": { "type": "xhttp", "path": "/btp" } }
 ```
 
 ## 为什么 BPC 的 xhttp 现在能走反代

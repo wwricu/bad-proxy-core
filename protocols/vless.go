@@ -111,7 +111,7 @@ func (in *VlessInbound) Connect() (targetAddr string, err error) {
 	}
 	id := VlessUser(raw)
 	if !in.users[id] {
-		return "", errors.New("vless: unauthorized id " + id.String())
+		return "", errors.New("vless: unauthorized id")
 	}
 	addonLen, err := in.ReadByte()
 	if err != nil {

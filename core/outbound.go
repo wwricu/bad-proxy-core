@@ -9,17 +9,12 @@ import (
 )
 
 type OutboundConfig struct {
-	Tag       string `json:"tag"`
-	Protocol  string `json:"protocol"`
-	Secret    string `json:"secret"`
-	Host      string `json:"host"`
-	Port      string `json:"port"`
-	Transport string `json:"transport"`
-	Path      string `json:"path"`
-	Authority string `json:"authority"`
-	Padding   string `json:"padding"`
-	Tls       bool   `json:"tls"`
-	Insecure  bool   `json:"insecure"`
+	Tag       string          `json:"tag"`
+	Protocol  string          `json:"protocol"`
+	Secret    string          `json:"secret"`
+	Host      string          `json:"host"`
+	Port      string          `json:"port"`
+	Transport TransportConfig `json:"transport"`
 }
 
 type Outbound struct {
@@ -47,14 +42,13 @@ func NewOutbound(c OutboundConfig, set settings) Outbound {
 		handshake: set.handshakeTimeout,
 		dial:      set.dialTimeout,
 		transport: transport.New(
-			transport.GetProtocol(c.Transport),
+			transport.GetProtocol(c.Transport.Type),
 			transport.Options{
 				Address:   address,
-				Path:      c.Path,
-				Authority: c.Authority,
-				Padding:   c.Padding,
-				UseTLS:    c.Tls,
-				Insecure:  c.Insecure,
+				Path:      c.Transport.Path,
+				Authority: c.Transport.Authority,
+				Padding:   c.Transport.Padding,
+				UseTLS:    c.Transport.Tls,
 			},
 		),
 	}

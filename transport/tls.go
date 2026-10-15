@@ -12,13 +12,12 @@ import (
 type tlsTransport struct {
 	address    string
 	serverName string // SNI, empty means derive from the address host
-	insecure   bool   // client only: skip verification
 	certPath   string // server only
 	keyPath    string // server only
 }
 
 func (t tlsTransport) Dial() (net.Conn, error) {
-	return tls.Dial("tcp", t.address, clientTlsConfig(t.address, t.serverName, t.insecure))
+	return tls.Dial("tcp", t.address, clientTlsConfig(t.address, t.serverName))
 }
 
 func (t tlsTransport) Listen() (net.Listener, error) {
@@ -28,16 +27,18 @@ func (t tlsTransport) Listen() (net.Listener, error) {
 	}
 	return tls.Listen("tcp", t.address, &tls.Config{
 		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
 		NextProtos:   []string{"h2", "http/1.1"},
 	})
 }
 
 // clientTlsConfig is shared by the tls and xhttp clients: serverName falls back
-// to the address host when unset.
-func clientTlsConfig(address, serverName string, insecure bool) *tls.Config {
+// to the address host when unset. Verification is always on - there is no
+// skip-verify option.
+func clientTlsConfig(address, serverName string) *tls.Config {
 	config := &tls.Config{
 		ServerName:         serverName,
-		InsecureSkipVerify: insecure,
+		MinVersion:         tls.VersionTLS12,
 		NextProtos:         []string{"h2", "http/1.1"},
 	}
 	if config.ServerName == "" {

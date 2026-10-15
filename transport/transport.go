@@ -38,9 +38,8 @@ type Options struct {
 	TlsCertPath string
 	TlsKeyPath  string
 	// client side
-	UseTLS   bool
-	Insecure bool
-	// xhttp padding range, "min-max" or "n", empty disables
+	UseTLS bool
+	// xhttp padding range, "min-max" or "n"; empty means use the default
 	Padding string
 }
 
@@ -62,7 +61,6 @@ func New(p ProtocolType, o Options) Transport {
 		return tlsTransport{
 			address:    o.Address,
 			serverName: o.Authority,
-			insecure:   o.Insecure,
 			certPath:   o.TlsCertPath,
 			keyPath:    o.TlsKeyPath,
 		}
@@ -73,7 +71,6 @@ func New(p ProtocolType, o Options) Transport {
 			authority: o.Authority,
 			padding:   o.Padding,
 			useTLS:    o.UseTLS,
-			insecure:  o.Insecure,
 			certPath:  o.TlsCertPath,
 			keyPath:   o.TlsKeyPath,
 		}

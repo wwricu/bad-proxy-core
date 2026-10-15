@@ -41,6 +41,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wwricu/bad-proxy-core/common"
 	"github.com/wwricu/bad-proxy-core/logger"
 )
 
@@ -62,9 +63,8 @@ type xhttpTransport struct {
 	address   string
 	path      string
 	authority string // SNI / Host, empty means derive from the address host
-	padding   string
+	padding   string // X-Padding range; empty means the default
 	useTLS    bool   // client only: https scheme + TLS config
-	insecure  bool   // client only: skip verification
 	certPath  string // server only
 	keyPath   string // server only
 }
@@ -105,14 +105,14 @@ func (t xhttpTransport) Dial() (net.Conn, error) {
 	req.Header.Set(HeaderSessionId, randomHex(8))
 	req.Header.Set(HeaderSecMode, SecModeStream)
 	req.Header.Set("Content-Type", xhttpContentType)
-	if padding := randomPadding(t.padding); padding != "" {
+	if padding := randomPadding(paddingOrDefault(t.padding)); padding != "" {
 		req.Header.Set(HeaderPadding, padding)
 	}
 
 	tr := &http.Transport{
 		DisableKeepAlives:     true, // one transport, one tunnel
 		ForceAttemptHTTP2:     true,
-		TLSClientConfig:       clientTlsConfig(t.address, t.authority, t.insecure),
+		TLSClientConfig:       clientTlsConfig(t.address, t.authority),
 		DialContext:           func(ctx context.Context, _, _ string) (net.Conn, error) { return net.Dial("tcp", t.address) },
 		ResponseHeaderTimeout: 30 * time.Second,
 	}
@@ -236,6 +236,7 @@ func (t xhttpTransport) Listen() (net.Listener, error) {
 		}
 		server.TLSConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
 			NextProtos:   []string{"h2", "http/1.1"},
 		}
 	}
@@ -273,6 +274,8 @@ func (listener *XhttpListener) serve(w http.ResponseWriter, r *http.Request) {
 	closeDone := func() { once.Do(func() { close(done) }) }
 
 	conn := &XhttpConn{reader: r.Body, writer: w, flush: true, remote: parseAddr(r.RemoteAddr)}
+	conn.setRead = rc.SetReadDeadline
+	conn.setWrite = rc.SetWriteDeadline
 	conn.onClose = func() {
 		closeDone()
 		// unblock a relay Read parked on the request body
@@ -326,6 +329,14 @@ type XhttpConn struct {
 	flush   bool
 	remote  net.Addr
 
+	// deadline hooks, populated only where the underlying HTTP machinery can
+	// enforce them (the server side, via the ResponseController). They let the
+	// core's handshake timeout bound a stalled request body read; the client's
+	// response wait is bounded by ResponseHeaderTimeout instead, so these stay
+	// nil there and the deadline calls are inert no-ops.
+	setRead  func(time.Time) error
+	setWrite func(time.Time) error
+
 	closeOnce sync.Once
 }
 
@@ -353,11 +364,27 @@ func (c *XhttpConn) Close() error {
 func (c *XhttpConn) LocalAddr() net.Addr  { return c.remote }
 func (c *XhttpConn) RemoteAddr() net.Addr { return c.remote }
 
-func (c *XhttpConn) SetDeadline(t time.Time) error { return nil }
+func (c *XhttpConn) SetDeadline(t time.Time) error {
+	errR, errW := c.SetReadDeadline(t), c.SetWriteDeadline(t)
+	if errR != nil {
+		return errR
+	}
+	return errW
+}
 
-func (c *XhttpConn) SetReadDeadline(t time.Time) error { return nil }
+func (c *XhttpConn) SetReadDeadline(t time.Time) error {
+	if c.setRead == nil {
+		return nil
+	}
+	return c.setRead(t)
+}
 
-func (c *XhttpConn) SetWriteDeadline(t time.Time) error { return nil }
+func (c *XhttpConn) SetWriteDeadline(t time.Time) error {
+	if c.setWrite == nil {
+		return nil
+	}
+	return c.setWrite(t)
+}
 
 // ---------------------------------------------------------------- helpers
 
@@ -381,6 +408,16 @@ func randomHex(n int) string {
 	p := make([]byte, n)
 	_, _ = rand.Read(p)
 	return hex.EncodeToString(p)
+}
+
+// paddingOrDefault resolves an unset padding spec to the process default so
+// anti-fingerprinting is on without configuration. An explicit "0"/""-ish
+// value still yields empty via randomPadding, letting a caller disable it.
+func paddingOrDefault(spec string) string {
+	if strings.TrimSpace(spec) == "" {
+		return common.DefaultPadding
+	}
+	return spec
 }
 
 // randomPadding produces a header value of random length within [min,max],
