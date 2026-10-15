@@ -75,7 +75,7 @@ Go **1.24 or newer** (`go.mod` pins `go 1.24.12`; the xhttp transport relies on
 differs.
 
 ```sh
-go build -o bad-proxy-core .
+go build -o bad-proxy-core ./cmd/bad-proxy-core
 ./bad-proxy-core --config config.json
 ```
 
@@ -543,8 +543,8 @@ admin.example.com }` pointing at the host and port 443.
 ## Repository layout
 
 ```
-main.go             CLI entry: flags, startup, signal handling (one binary,
-                    role from config; only SIGINT/SIGTERM stop it)
+cmd/bad-proxy-core/   CLI entry (main.go): flags, startup, signal handling (one
+                    binary, role from config; only SIGINT/SIGTERM stop it)
 core/               engine: settings.go (GeneralConfig + defaults), inbound.go
                     and outbound.go (config structs, TransportConfig, handshake
                     wiring), core.go (relay loop, routing, idle watchdog)
@@ -600,8 +600,8 @@ ready-made end-to-end matrix (loopback origin on `127.0.0.1:18000`, no external
 network needed):
 
 ```sh
-go build -o bad-proxy-server.exe .
-go build -o bad-proxy-client.exe .
+go build -o bad-proxy-server.exe ./cmd/bad-proxy-core
+go build -o bad-proxy-client.exe ./cmd/bad-proxy-core
 ./bad-proxy-server.exe --config config_test_server.json &   # vless/btp/trojan
 ./bad-proxy-client.exe --config config_test_client.json &   # socks 18081, http 18080 (vless+xhttp)
 ./bad-proxy-client.exe --config config_test_btp.json &      # socks 18091, http 18094 (btp+tcp)

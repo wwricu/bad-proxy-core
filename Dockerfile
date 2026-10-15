@@ -3,7 +3,7 @@ WORKDIR /src
 COPY go.mod ./
 RUN go mod download || true
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/bad-proxy-core .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/bad-proxy-core ./cmd/bad-proxy-core
 
 FROM alpine:3.20
 RUN mkdir -p /etc/bad-proxy

@@ -37,14 +37,16 @@ prepare_rules() {
 }
 
 go_flags=(-trimpath -ldflags "-s -w")
+# the entrypoint package (the rest of the repo is a library)
+entry_pkg=./cmd/bad-proxy-core
 
 build_one() {
     local os=$1 arch=$2 target="${dist_name}-$1-$2"
     export GOOS="$os" GOARCH="$arch" CGO_ENABLED=0
     if [ "$os" = "windows" ]; then
         # console build + a windowsgui build (no console window) share one zip
-        go build "${go_flags[@]}" -o "./${target}.exe"
-        go build -trimpath -ldflags="-s -w -H windowsgui" -o "./${target}_cli.exe"
+        go build "${go_flags[@]}" -o "./${target}.exe" "${entry_pkg}"
+        go build -trimpath -ldflags="-s -w -H windowsgui" -o "./${target}_cli.exe" "${entry_pkg}"
         local payload=("./${target}.exe" "./${target}_cli.exe")
         # config.json is gitignored, so it is absent on a CI checkout: bundle it
         # only when present, exactly like rules.dat.
@@ -53,7 +55,7 @@ build_one() {
         zip "${target}.zip" "${payload[@]}"
         rm -f "./${target}.exe" "./${target}_cli.exe"
     else
-        go build "${go_flags[@]}" -o "./${target}"
+        go build "${go_flags[@]}" -o "./${target}" "${entry_pkg}"
         local payload=("./${target}")
         if [ -f config.json ]; then payload+=("config.json"); fi
         if [ -f "${rule_filename}" ]; then payload+=("${rule_filename}"); fi
