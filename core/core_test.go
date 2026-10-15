@@ -1,4 +1,4 @@
-package proxy
+package core
 
 import (
 	"encoding/json"
@@ -7,6 +7,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/wwricu/bad-proxy-core/logger"
 )
 
 func TestResolveSettingsDefaults(t *testing.T) {
@@ -18,8 +20,11 @@ func TestResolveSettingsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.statsEvery != 0 {
-		t.Errorf("stats should default off, got %v", s.statsEvery)
+	if s.logLevel != logger.Debug {
+		t.Errorf("log_level should default debug, got %v", s.logLevel)
+	}
+	if s.consoleLevel != logger.Info {
+		t.Errorf("console_level should default info, got %v", s.consoleLevel)
 	}
 	if s.handshakeTimeout != defaultHandshakeTimeout {
 		t.Errorf("handshake default = %v, want %v", s.handshakeTimeout, defaultHandshakeTimeout)
@@ -34,7 +39,7 @@ func TestResolveSettingsDefaults(t *testing.T) {
 
 func TestResolveSettingsFromJson(t *testing.T) {
 	var c Config
-	body := `{"general":{"stats":"30s","handshake_timeout":"5s","dial_timeout":"2s","relay_idle_timeout":"3m","relay_buffer_kib":128}}`
+	body := `{"general":{"handshake_timeout":"5s","dial_timeout":"2s","relay_idle_timeout":"3m","relay_buffer_kib":128,"log_level":"warn","console_level":"error","log_file":"bpc.log"}}`
 	if err := json.Unmarshal([]byte(body), &c); err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +47,7 @@ func TestResolveSettingsFromJson(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.statsEvery != 30*time.Second || s.handshakeTimeout != 5*time.Second || s.dialTimeout != 2*time.Second {
+	if s.handshakeTimeout != 5*time.Second || s.dialTimeout != 2*time.Second {
 		t.Errorf("duration parsing wrong: %+v", s)
 	}
 	if s.relayIdle != 3*time.Minute {
@@ -51,11 +56,17 @@ func TestResolveSettingsFromJson(t *testing.T) {
 	if s.relayBufferKiB != 128 {
 		t.Errorf("relay_buffer_kib = %d, want 128", s.relayBufferKiB)
 	}
+	if s.logLevel != logger.Warn || s.consoleLevel != logger.Error {
+		t.Errorf("log level parsing wrong: %+v", s)
+	}
+	if s.logFile != "bpc.log" {
+		t.Errorf("log_file = %q, want bpc.log", s.logFile)
+	}
 }
 
 func TestResolveSettingsRejectsBadInput(t *testing.T) {
 	cases := []string{
-		`{"general":{"stats":"nope"}}`,
+		`{"general":{"log_level":"nope"}}`,
 		`{"general":{"handshake_timeout":"3"}}`,
 		`{"general":{"dial_timeout":"xx"}}`,
 		`{"general":{"relay_idle_timeout":"-5s"}}`,

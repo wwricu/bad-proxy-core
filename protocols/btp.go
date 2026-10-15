@@ -8,24 +8,24 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"log"
 	"math/big"
 	"net"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/wwricu/bad-proxy-core/structure"
+	"github.com/wwricu/bad-proxy-core/common"
+	"github.com/wwricu/bad-proxy-core/logger"
 )
 
 /*
-Bad-Proxy-Transport v2.
+Bad-Proxy-Transport v2. The header layout both directions agree on:
 
-+----------+------------+-----------+-----------+-----+-----+-----+------+-----+
-| HMAC     | confusion  | confusion | timestamp | dir | len | host| port | ... |
-| digest   | length     | bytes     |           |     |     |     | (2B) |     |
-+----------+------------+-----------+-----------+-----+-----+-----+------+-----+
-|    32    |     1      |    0-64   |     4     |  1  |  1  | Var |  2   |     |
+	+--------+-----------+-----------+-----------+-----+-----+------+------+
+	| HMAC   | confusion | confusion | timestamp | dir | len | host | port |
+	| digest | length    | bytes     |           |     |     |      | (2B) |
+	+--------+-----------+-----------+-----------+-----+-----+------+------+
+	|   32   |     1     |   0-64    |     4     |  1  |  1  | var  |  2   |
 
 The HMAC-SHA256 over the header authenticates the request and, together with
 the timestamp window plus the digest replay cache, stops replays. The body
@@ -49,13 +49,13 @@ const (
 )
 
 var (
-	btpLRU     *structure.LRU[string]
+	btpLRU     *common.LRU[string]
 	btpLRUOnce sync.Once
 )
 
-func GetBtpCache() *structure.LRU[string] {
+func getBtpCache() *common.LRU[string] {
 	btpLRUOnce.Do(func() {
-		instance := &structure.LRU[string]{}
+		instance := &common.LRU[string]{}
 		instance.Init(210000)
 		btpLRU = instance
 	})
@@ -85,10 +85,10 @@ func (h *btpHeader) validate(secret string) error {
 	if !hmac.Equal(mac.Sum(nil), h.digest) {
 		return errors.New("digest mismatch, unauthorized connect")
 	}
-	return GetBtpCache().Add(hex.EncodeToString(h.digest))
+	return getBtpCache().Add(hex.EncodeToString(h.digest))
 }
 
-func readBtpHeader(in *Buffered) (*btpHeader, error) {
+func readBtpHeader(in *common.Buffered) (*btpHeader, error) {
 	header := &btpHeader{}
 	digest, err := in.ReadFull(btpDigestLen)
 	if err != nil {
@@ -180,7 +180,7 @@ func encodeBtpHeader(address string, secret string) ([]byte, error) {
 	header := make([]byte, 0, 1+n+5+1+len(host)+2)
 	header = append(header, byte(n))
 	header = append(header, confusion...)
-	stamp := make([]byte, 4)
+	stamp := make([]byte, btpTimestampLen)
 	binary.BigEndian.PutUint32(stamp, uint32(timestamp))
 	header = append(header, stamp...)
 	header = append(header, btpDirective, byte(len(host)))
@@ -192,8 +192,10 @@ func encodeBtpHeader(address string, secret string) ([]byte, error) {
 	return append(mac.Sum(nil), header...), nil
 }
 
+// BtpInbound is the server side: parse and authenticate the digest-prefixed
+// header, rejecting replays through the digest cache.
 type BtpInbound struct {
-	*Buffered
+	*common.Buffered
 	secrets []string
 	// probe keeps the first bytes before the handshake consumes them; the
 	// fallback page must recognize an HTTP GET that failed header parsing.
@@ -201,7 +203,7 @@ type BtpInbound struct {
 }
 
 func NewBtpInbound(conn net.Conn, secrets []string) *BtpInbound {
-	return &BtpInbound{Buffered: NewBuffered(conn), secrets: secrets}
+	return &BtpInbound{Buffered: common.NewBuffered(conn), secrets: secrets}
 }
 
 func (in *BtpInbound) Connect() (targetAddr string, err error) {
@@ -211,7 +213,7 @@ func (in *BtpInbound) Connect() (targetAddr string, err error) {
 		return "", errors.New("btp inbound configured without a secret")
 	}
 	in.probe = in.Peek(8)
-	if LooksLikeHttpRequest(in.probe) {
+	if common.LooksLikeHttpRequest(in.probe) {
 		// a web probe can never be a BTP handshake; fail now so Fallback()
 		// answers while the client is still connected
 		return "", errors.New("http probe")
@@ -231,20 +233,21 @@ func (in *BtpInbound) Connect() (targetAddr string, err error) {
 }
 
 func (in *BtpInbound) Fallback() {
-	if LooksLikeHttpRequest(in.probe) {
-		ServeFallbackPage(in.Buffered)
+	if common.LooksLikeHttpRequest(in.probe) {
+		common.ServeFallbackPage(in.Buffered)
 		return
 	}
-	log.Println("btp inbound: unauthorized probe")
+	logger.Debugf("btp inbound: unauthorized probe")
 }
 
+// BtpOutbound is the client side: write the authenticated header, then relay.
 type BtpOutbound struct {
-	*Buffered
+	*common.Buffered
 	secret string
 }
 
 func NewBtpOutbound(conn net.Conn, secret string) *BtpOutbound {
-	return &BtpOutbound{Buffered: NewBuffered(conn), secret: secret}
+	return &BtpOutbound{Buffered: common.NewBuffered(conn), secret: secret}
 }
 
 func (out *BtpOutbound) Connect(targetAddr string) error {

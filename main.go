@@ -3,11 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 
-	"github.com/wwricu/bad-proxy-core/proxy"
+	"github.com/wwricu/bad-proxy-core/core"
+	"github.com/wwricu/bad-proxy-core/logger"
 )
 
 const (
@@ -41,9 +41,8 @@ func main() {
 		fmt.Print(helpMsg)
 		return
 	}
-	log.SetFlags(log.Lshortfile)
-	if err := proxy.Startup(*configPath, *routerPath); err != nil {
-		log.Println("error starting proxy:", err)
+	if err := core.Startup(*configPath, *routerPath); err != nil {
+		logger.Errorf("error starting proxy: %v", err)
 		os.Exit(1)
 	}
 	sig := make(chan os.Signal, 1)

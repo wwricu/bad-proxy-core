@@ -5,51 +5,56 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+
+	"github.com/wwricu/bad-proxy-core/common"
 )
 
 /*
 https://trojan-gfw.github.io/trojan/protocol.html
 
-+-----------------------+---------+----------------+---------+----------+
-| hex(SHA224(Password)) |  CRLF   | Trojan Request |  CRLF   | Payload  |
-+-----------------------+---------+----------------+---------+----------+
-|          56           | X'0D0A' |    Variable    | X'0D0A' | Variable |
-+-----------------------+---------+----------------+---------+----------+
+	+-----------------------+---------+----------------+---------+----------+
+	| hex(SHA224(Password)) |  CRLF   | Trojan Request |  CRLF   | Payload  |
+	+-----------------------+---------+----------------+---------+----------+
+	|          56           | X'0D0A' |    Variable    | X'0D0A' | Variable |
 
-Trojan Request is a SOCKS5-like request (CMD/ATYP/DST.ADDR/DST.PORT);
-only CMD CONNECT is supported.
+Trojan Request is a SOCKS5-like request (CMD/ATYP/DST.ADDR/DST.PORT); only
+CMD CONNECT is supported.
 */
 
-const HashLen = 56
+// hashLen is the hex length of a SHA224 password digest in the header.
+const hashLen = 56
 
+// trojanHash is the password digest both directions compute.
+func trojanHash(password string) string {
+	h := sha256.New224()
+	h.Write([]byte(password))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// TrojanInbound is the server side: verify the password digest then decode the
+// SOCKS-like request.
 type TrojanInbound struct {
-	*Buffered
+	*common.Buffered
 	passwords []string
 }
 
 func NewTrojanInbound(conn net.Conn, passwords []string) *TrojanInbound {
-	return &TrojanInbound{Buffered: NewBuffered(conn), passwords: passwords}
-}
-
-func trojanHash(password string) string {
-	hasher := sha256.New224()
-	hasher.Write([]byte(password))
-	return hex.EncodeToString(hasher.Sum(nil))
+	return &TrojanInbound{Buffered: common.NewBuffered(conn), passwords: passwords}
 }
 
 func (in *TrojanInbound) Connect() (targetAddr string, err error) {
-	head, err := in.ReadFull(HashLen + 2)
+	head, err := in.ReadFull(hashLen + 2)
 	if err != nil {
 		return
 	}
-	if string(head[HashLen:]) != "\r\n" {
+	if string(head[hashLen:]) != "\r\n" {
 		return "", errors.New("malformed trojan header")
 	}
 	authorized := false
-	want := make([]byte, HashLen)
+	want := make([]byte, hashLen)
 	for _, password := range in.passwords {
 		copy(want, trojanHash(password))
-		if subtleEqual(head[:HashLen], want) {
+		if subtleEqual(head[:hashLen], want) {
 			authorized = true
 			break
 		}
@@ -65,7 +70,7 @@ func (in *TrojanInbound) Connect() (targetAddr string, err error) {
 	if cmd != 0x01 {
 		return "", errors.New("cmd is not connect")
 	}
-	if targetAddr, err = in.DecodeTarget(TargetCodingSocks); err != nil {
+	if targetAddr, err = in.DecodeTarget(common.TargetCodingSocks); err != nil {
 		return
 	}
 	crlf, err := in.ReadFull(2)
@@ -80,13 +85,14 @@ func (in *TrojanInbound) Connect() (targetAddr string, err error) {
 
 func (in *TrojanInbound) Fallback() {}
 
+// TrojanOutbound is the client side: emit the digest and a SOCKS-like CONNECT.
 type TrojanOutbound struct {
-	*Buffered
+	*common.Buffered
 	password string
 }
 
 func NewTrojanOutbound(conn net.Conn, password string) *TrojanOutbound {
-	return &TrojanOutbound{Buffered: NewBuffered(conn), password: password}
+	return &TrojanOutbound{Buffered: common.NewBuffered(conn), password: password}
 }
 
 func (out *TrojanOutbound) Connect(targetAddr string) error {
@@ -94,7 +100,7 @@ func (out *TrojanOutbound) Connect(targetAddr string) error {
 	request = append(request, trojanHash(out.password)...)
 	request = append(request, '\r', '\n', 0x01)
 	writer := addressWriter{w: &request}
-	if err := EncodeTarget(writer, targetAddr, TargetCodingSocks); err != nil {
+	if err := common.EncodeTarget(writer, targetAddr, common.TargetCodingSocks); err != nil {
 		return err
 	}
 	request = append(request, '\r', '\n')
@@ -102,6 +108,8 @@ func (out *TrojanOutbound) Connect(targetAddr string) error {
 	return err
 }
 
+// subtleEqual is a constant-time byte comparison, so a wrong password cannot
+// be recovered byte by byte through timing.
 func subtleEqual(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false

@@ -1,17 +1,16 @@
-package proxy
+package core
 
 import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/wwricu/bad-proxy-core/logger"
 )
 
 // GeneralConfig is the "general" object in the config file: process-wide
 // settings that belong to no inbound, outbound, or router.
 type GeneralConfig struct {
-	// Stats is a duration string ("30s", "5m"). When set, one metrics summary
-	// line is logged per interval.
-	Stats string `json:"stats"`
 	// HandshakeTimeout bounds connect+handshake on both sides ("10s").
 	HandshakeTimeout string `json:"handshake_timeout"`
 	// DialTimeout bounds a direct (freedom) connect to the target ("15s").
@@ -22,6 +21,15 @@ type GeneralConfig struct {
 	RelayIdleTimeout string `json:"relay_idle_timeout"`
 	// RelayBufferKiB is the per-stream relay copy buffer size, 1-1024.
 	RelayBufferKiB int `json:"relay_buffer_kib"`
+	// LogFile is the path the detailed log is appended to. Empty (default)
+	// means console-only.
+	LogFile string `json:"log_file"`
+	// LogLevel is the minimum level written to LogFile ("debug","info","warn",
+	// "error","off"); default "debug".
+	LogLevel string `json:"log_level"`
+	// ConsoleLevel is the minimum level echoed to stdout; default "info". Raise
+	// it to "warn"/"error" to keep stdout to only the critical lines.
+	ConsoleLevel string `json:"console_level"`
 }
 
 const (
@@ -33,11 +41,13 @@ const (
 
 // settings is GeneralConfig after validation, with defaults applied.
 type settings struct {
-	statsEvery       time.Duration
 	handshakeTimeout time.Duration
 	dialTimeout      time.Duration
 	relayIdle        time.Duration
 	relayBufferKiB   int
+	logFile          string
+	logLevel         logger.Level
+	consoleLevel     logger.Level
 }
 
 func (c Config) resolveSettings() (settings, error) {
@@ -45,13 +55,8 @@ func (c Config) resolveSettings() (settings, error) {
 		handshakeTimeout: defaultHandshakeTimeout,
 		dialTimeout:      defaultDialTimeout,
 		relayBufferKiB:   defaultRelayBufferKiB,
-	}
-	if c.General.Stats != "" {
-		every, err := time.ParseDuration(c.General.Stats)
-		if err != nil {
-			return settings{}, errors.New("bad general.stats " + c.General.Stats)
-		}
-		s.statsEvery = every
+		logLevel:         logger.Debug,
+		consoleLevel:     logger.Info,
 	}
 	if c.General.HandshakeTimeout != "" {
 		d, err := time.ParseDuration(c.General.HandshakeTimeout)
@@ -84,5 +89,20 @@ func (c Config) resolveSettings() (settings, error) {
 		}
 		s.relayBufferKiB = c.General.RelayBufferKiB
 	}
+	if c.General.LogLevel != "" {
+		l, ok := logger.ParseLevel(c.General.LogLevel)
+		if !ok {
+			return settings{}, errors.New("bad general.log_level " + c.General.LogLevel)
+		}
+		s.logLevel = l
+	}
+	if c.General.ConsoleLevel != "" {
+		l, ok := logger.ParseLevel(c.General.ConsoleLevel)
+		if !ok {
+			return settings{}, errors.New("bad general.console_level " + c.General.ConsoleLevel)
+		}
+		s.consoleLevel = l
+	}
+	s.logFile = c.General.LogFile
 	return s, nil
 }

@@ -1,4 +1,4 @@
-package structure
+package common
 
 // ACAutomaton is an Aho-Corasick multi-pattern substring matcher. It answers
 // MatchAny("does any pattern occur as a substring of the key?") in a single

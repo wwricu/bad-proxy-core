@@ -1,9 +1,10 @@
 package router
 
 import (
-	"log"
 	"regexp"
 	"strings"
+
+	"github.com/wwricu/bad-proxy-core/logger"
 )
 
 type Config struct {
@@ -37,7 +38,7 @@ func NewRegexMatcher(regexStrings []string) Matcher {
 	for _, ex := range regexStrings {
 		compiled, err := regexp.Compile(ex)
 		if err != nil {
-			log.Println("bad rule regex, skipped:", ex)
+			logger.Warnf("bad rule regex, skipped: %s", ex)
 			continue
 		}
 		regexMatcher = append(regexMatcher, compiled)
@@ -73,7 +74,7 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router, e
 	if readErr != nil {
 		// a missing/broken rules.dat only disables named lists (geosite/geoip);
 		// inline full:/domain:/regexp: rules must still load and route
-		log.Printf("rules file %s unavailable, named rules disabled: %v\n", routerPath, readErr)
+		logger.Warnf("rules file %s unavailable, named rules disabled: %v", routerPath, readErr)
 		allRules = map[string]*ParsedList{}
 	}
 
@@ -119,8 +120,8 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router, e
 		Tag:      tag,
 		matchers: make([]Matcher, 0),
 	}
-	log.Printf(
-		"%d rules with %d domains loaded\n",
+	logger.Infof(
+		"%d rules with %d domains loaded",
 		len(allRules),
 		len(fullDomains)+len(regexStrings)+len(domains)+len(keywords),
 	)

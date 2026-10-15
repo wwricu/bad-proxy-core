@@ -6,9 +6,11 @@ build
 *.dat
 *.iml
 *.exe
+*.exe~
 *.run
 *.crt
 *.key
 *.json
 *.toml
+.xray/
 conf/config.json

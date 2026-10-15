@@ -1,10 +1,9 @@
-package proxy
+package core
 
 import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net"
 	"os"
 	"strings"
@@ -12,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/wwricu/bad-proxy-core/metrics"
+	"github.com/wwricu/bad-proxy-core/logger"
 	"github.com/wwricu/bad-proxy-core/router"
 )
 
@@ -65,7 +64,7 @@ func newProxy(config Config) (newProxy Proxy, err error) {
 		rules = append(rules, r.Rules...)
 		newRouter, err := router.NewRouter(r.Tag, rules, config.RouterPath)
 		if err != nil {
-			log.Println("wrong router:", r.Tag)
+			logger.Warnf("wrong router: %s", r.Tag)
 			continue
 		}
 		newProxy.routers = append(newProxy.routers, *newRouter)
@@ -90,22 +89,15 @@ func newProxy(config Config) (newProxy Proxy, err error) {
 }
 
 func (proxy Proxy) Start() {
-	if proxy.settings.statsEvery > 0 {
-		go func() {
-			for range time.Tick(proxy.settings.statsEvery) {
-				log.Println("stats:", metrics.Default.Snapshot())
-			}
-		}()
-	}
 	for i := range proxy.inbounds {
 		inbound := proxy.inbounds[i]
 		go func(inbound *Inbound) {
 			if err := inbound.Listen(); err != nil {
 				// one broken inbound must not take the whole process down
-				log.Printf("inbound on %s disabled: %v\n", inbound.address, err)
+				logger.Errorf("inbound on %s disabled: %v", inbound.address, err)
 				return
 			}
-			log.Printf("%s listen on %s\n", inbound.protocol, inbound.address)
+			logger.Infof("%s listen on %s", inbound.protocol, inbound.address)
 			proxy.serve(inbound)
 		}(&inbound)
 	}
@@ -117,35 +109,35 @@ func (proxy Proxy) serve(inbound *Inbound) {
 		in, err := inbound.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
-				log.Printf("inbound on %s closed\n", inbound.address)
+				logger.Infof("inbound on %s closed", inbound.address)
 				return
 			}
 			failures++
 			if failures > 32 {
-				log.Printf("inbound on %s giving up after repeated errors\n", inbound.address)
+				logger.Errorf("inbound on %s giving up after repeated errors", inbound.address)
 				return
 			}
 			time.Sleep(50 * time.Millisecond) // transient accept error
 			continue
 		}
 		failures = 0
-		inbound.mp.Accepted.Add(1)
-		go proxy.proxy(in, inbound.mp)
+		go proxy.proxy(in)
 	}
 }
 
-func (proxy Proxy) proxy(in InboundConnect, mp *metrics.ProtoStats) {
+func (proxy Proxy) proxy(in InboundConnect) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Println("relay panic:", r)
+			logger.Errorf("relay panic: %v", r)
 		}
 		_ = in.Close()
 	}()
 
 	address, err := in.Connect() // handshake
 	if err != nil {
-		mp.HandshakeFail.Add(1)
-		log.Println("inbound connect failed:", err)
+		// routine: internet probes and bad credentials land here constantly,
+		// so keep it at debug to avoid flooding the console
+		logger.Debugf("inbound connect failed: %v", err)
 		in.Fallback()
 		return
 	}
@@ -154,15 +146,12 @@ func (proxy Proxy) proxy(in InboundConnect, mp *metrics.ProtoStats) {
 	outbound := proxy.route(address)
 	out, err := outbound.Dial(address)
 	if err != nil {
-		log.Printf("outbound dial to %s failed, err=%v\n", address, err)
+		logger.Warnf("outbound dial to %s failed: %v", address, err)
 		return
 	}
 	defer func() {
 		_ = out.Close()
 	}()
-
-	metrics.Default.TunnelsActive.Add(1)
-	defer metrics.Default.TunnelsActive.Add(-1)
 
 	// reclaim a tunnel that goes completely quiet (idle origin keep-alive
 	// otherwise pins both ends forever). No-op when relay_idle_timeout is unset.
@@ -174,14 +163,12 @@ func (proxy Proxy) proxy(in InboundConnect, mp *metrics.ProtoStats) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := relayCopy(in, &metrics.Default.BytesDown, out, &idle); err != nil && !idle.benign(err) {
-			metrics.Default.CopyErr.Add(1)
-			log.Printf("copy out->in: %v\n", err)
+		if _, err := relayCopy(in, out, &idle); err != nil && !idle.benign(err) {
+			logger.Warnf("copy out->in: %v", err)
 		}
 	}()
-	if _, err = relayCopy(out, &metrics.Default.BytesUp, in, &idle); err != nil && !idle.benign(err) {
-		metrics.Default.CopyErr.Add(1)
-		log.Printf("copy in->out: %v\n", err)
+	if _, err = relayCopy(out, in, &idle); err != nil && !idle.benign(err) {
+		logger.Warnf("copy in->out: %v", err)
 	}
 	<-done
 }
@@ -240,28 +227,26 @@ func (w *idleWatch) start(in, out net.Conn) (stop func()) {
 // relay buffers come from a pool. The thin wrappers hide ReadFrom/WriteTo
 // so io.CopyBuffer runs its plain chunked loop: on Windows the
 // TCPConn->TCPConn TransmitFile "splice" measured ~80 MB/s while a 64 KiB
-// buffered loop passes ~400 MB/s over the same loopback path. The counting
-// writer adds one atomic per 64 KiB chunk - free next to the syscalls.
+// buffered loop passes ~400 MB/s over the same loopback path. The idle writer
+// only records activity so the watchdog can reclaim a silent tunnel.
 type plainWriter struct{ io.Writer }
 type plainReader struct{ io.Reader }
 
-type countingWriter struct {
+type idleWriter struct {
 	io.Writer
-	n    *atomic.Int64
 	idle *idleWatch
 }
 
-func (c countingWriter) Write(p []byte) (int, error) {
-	written, err := c.Writer.Write(p)
-	c.n.Add(int64(written))
-	c.idle.touch()
+func (w idleWriter) Write(p []byte) (int, error) {
+	written, err := w.Writer.Write(p)
+	w.idle.touch()
 	return written, err
 }
 
-func relayCopy(dst io.Writer, counter *atomic.Int64, src io.Reader, idle *idleWatch) (int64, error) {
+func relayCopy(dst io.Writer, src io.Reader, idle *idleWatch) (int64, error) {
 	buf := relayBufPool.Get().(*[]byte)
 	defer relayBufPool.Put(buf)
-	return io.CopyBuffer(plainWriter{countingWriter{dst, counter, idle}}, plainReader{src}, *buf)
+	return io.CopyBuffer(plainWriter{idleWriter{dst, idle}}, plainReader{src}, *buf)
 }
 
 func (proxy Proxy) route(address string) Outbound {
@@ -298,6 +283,16 @@ func Startup(configPath string, routerPath string) (err error) {
 	config, err := readConfig(configPath)
 	if err != nil {
 		return
+	}
+
+	// bring up logging from the resolved settings before anything else logs,
+	// so router warnings and inbound lifecycle land in the configured sinks
+	set, err := config.resolveSettings()
+	if err != nil {
+		return err
+	}
+	if err := logger.Configure(set.logFile, set.logLevel, set.consoleLevel); err != nil {
+		logger.Warnf("log file %s unavailable, console only: %v", set.logFile, err)
 	}
 
 	config.RouterPath = routerPath

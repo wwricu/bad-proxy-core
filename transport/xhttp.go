@@ -33,7 +33,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math/big"
 	"net"
 	"net/http"
@@ -41,6 +40,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wwricu/bad-proxy-core/logger"
 )
 
 const (
@@ -53,26 +54,48 @@ const (
 
 var errListenerClosed = fmt.Errorf("xhttp listener closed: %w", net.ErrClosed)
 
+// xhttpTransport is a full-duplex byte stream carried over one long-lived HTTP
+// POST. It genuinely reads every endpoint field (path, authority, padding, TLS
+// material), so it carries the whole set - but as named struct fields, not as a
+// grab-bag handed to each call.
+type xhttpTransport struct {
+	address   string
+	path      string
+	authority string // SNI / Host, empty means derive from the address host
+	padding   string
+	useTLS    bool   // client only: https scheme + TLS config
+	insecure  bool   // client only: skip verification
+	certPath  string // server only
+	keyPath   string // server only
+}
+
+// DialXhttp and ListenXhttp are package-level shorthands over the flat Options
+// so tests and quick call sites need no struct; they build the transport via New
+// and run its method.
+func DialXhttp(o Options) (net.Conn, error) { return New(XHTTP, o).Dial() }
+
+func ListenXhttp(o Options) (net.Listener, error) { return New(XHTTP, o).Listen() }
+
 // ---------------------------------------------------------------- client
 
-func DialXhttp(opts Options) (net.Conn, error) {
-	authorityHost, _, err := net.SplitHostPort(opts.Address)
+func (t xhttpTransport) Dial() (net.Conn, error) {
+	authorityHost, _, err := net.SplitHostPort(t.address)
 	if err != nil {
 		return nil, err
 	}
-	authority := opts.Authority
+	authority := t.authority
 	if authority == "" {
 		authority = authorityHost
 	}
 	scheme := "http"
-	if opts.UseTLS {
+	if t.useTLS {
 		scheme = "https"
 	}
 
 	pr, pw := io.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 	req, err := http.NewRequestWithContext(
-		ctx, http.MethodPost, scheme+"://"+authority+pathOrSlash(opts.Path), pr,
+		ctx, http.MethodPost, scheme+"://"+authority+pathOrSlash(t.path), pr,
 	)
 	if err != nil {
 		cancel()
@@ -82,15 +105,15 @@ func DialXhttp(opts Options) (net.Conn, error) {
 	req.Header.Set(HeaderSessionId, randomHex(8))
 	req.Header.Set(HeaderSecMode, SecModeStream)
 	req.Header.Set("Content-Type", xhttpContentType)
-	if padding := randomPadding(opts.Padding); padding != "" {
+	if padding := randomPadding(t.padding); padding != "" {
 		req.Header.Set(HeaderPadding, padding)
 	}
 
 	tr := &http.Transport{
 		DisableKeepAlives:     true, // one transport, one tunnel
 		ForceAttemptHTTP2:     true,
-		TLSClientConfig:       clientTlsConfig(opts),
-		DialContext:           func(ctx context.Context, _, _ string) (net.Conn, error) { return net.Dial("tcp", opts.Address) },
+		TLSClientConfig:       clientTlsConfig(t.address, t.authority, t.insecure),
+		DialContext:           func(ctx context.Context, _, _ string) (net.Conn, error) { return net.Dial("tcp", t.address) },
 		ResponseHeaderTimeout: 30 * time.Second,
 	}
 	// RoundTrip returns as soon as response headers arrive; the server sends
@@ -111,7 +134,7 @@ func DialXhttp(opts Options) (net.Conn, error) {
 		return nil, fmt.Errorf("xhttp: server answered %d: %s", resp.StatusCode, string(body))
 	}
 
-	conn := &XhttpConn{reader: resp.Body, remote: parseAddr(opts.Address)}
+	conn := &XhttpConn{reader: resp.Body, remote: parseAddr(t.address)}
 	conn.writer = pw
 	conn.onClose = func() {
 		pw.Close()
@@ -132,10 +155,10 @@ type XhttpListener struct {
 	closeOnce sync.Once
 }
 
-func ListenXhttp(opts Options) (net.Listener, error) {
+func (t xhttpTransport) Listen() (net.Listener, error) {
 	listener := &XhttpListener{
-		path:   pathOrSlash(opts.Path),
-		addr:   parseAddr(opts.Address),
+		path:   pathOrSlash(t.path),
+		addr:   parseAddr(t.address),
 		ch:     make(chan net.Conn, 32),
 		closed: make(chan struct{}),
 	}
@@ -156,12 +179,12 @@ func ListenXhttp(opts Options) (net.Listener, error) {
 	server := &http.Server{Handler: mux, Protocols: &protocols}
 	listener.server = server
 
-	tcpListener, err := net.Listen("tcp", opts.Address)
+	tcpListener, err := net.Listen("tcp", t.address)
 	if err != nil {
 		return nil, err
 	}
-	if opts.TlsCertPath != "" && opts.TlsKeyPath != "" {
-		cert, err := tls.LoadX509KeyPair(opts.TlsCertPath, opts.TlsKeyPath)
+	if t.certPath != "" && t.keyPath != "" {
+		cert, err := tls.LoadX509KeyPair(t.certPath, t.keyPath)
 		if err != nil {
 			tcpListener.Close()
 			return nil, err
@@ -180,7 +203,7 @@ func ListenXhttp(opts Options) (net.Listener, error) {
 			err = server.Serve(tcpListener)
 		}
 		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-			log.Printf("xhttp server on %s dead: %v\n", opts.Address, err)
+			logger.Errorf("xhttp server on %s dead: %v", t.address, err)
 		}
 		listener.Close()
 	}()
@@ -197,7 +220,7 @@ func (listener *XhttpListener) serve(w http.ResponseWriter, r *http.Request) {
 	// the handler starts writing the response header, which kills the duplex
 	// stream whenever the first upload chunk is small (Content-Length case).
 	if err := rc.EnableFullDuplex(); err != nil {
-		log.Printf("xhttp: full duplex unavailable: %v\n", err)
+		logger.Warnf("xhttp: full duplex unavailable: %v", err)
 	}
 
 	done := make(chan struct{})

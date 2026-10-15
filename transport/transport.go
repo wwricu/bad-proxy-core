@@ -1,8 +1,6 @@
 package transport
 
 import (
-	"crypto/tls"
-	"errors"
 	"net"
 )
 
@@ -28,8 +26,10 @@ func GetProtocol(protocol string) ProtocolType {
 	return ""
 }
 
-// Options fully describes one transport endpoint; no address/string
-// concatenation tricks anymore.
+// Options is the flat per-endpoint config mirror: it is only ever the *input*
+// to New, never carried into a live connection. New picks out just the fields
+// each transport reads, so tcpTransport, for one, physically cannot see padding
+// or a cert path.
 type Options struct {
 	Address   string // host:port
 	Path      string // xhttp request path, default "/"
@@ -44,48 +44,47 @@ type Options struct {
 	Padding string
 }
 
-func Dial(protocol ProtocolType, opts Options) (net.Conn, error) {
-	switch protocol {
-	case TLS:
-		return tls.Dial("tcp", opts.Address, clientTlsConfig(opts))
-	case XHTTP:
-		return DialXhttp(opts)
-	case TCP:
-		return net.Dial("tcp", opts.Address)
-	}
-	return nil, errors.New("unknown transport " + protocol.Str())
+// Transport is one way of moving an undirected byte stream between two
+// endpoints. Each concrete transport (tcp, tls, xhttp) holds exactly its own
+// options as struct fields, so Dial/Listen take no arguments and a caller only
+// ever handles this interface - never the grab-bag Options.
+type Transport interface {
+	Dial() (net.Conn, error)
+	Listen() (net.Listener, error)
 }
 
-func Listen(protocol ProtocolType, opts Options) (net.Listener, error) {
-	switch protocol {
+// New builds the transport for p out of the flat options. An unrecognised p
+// falls back to raw TCP, so callers may pass a not-yet-defaulted ProtocolType
+// safely. This is the single place that knows which fields each transport uses.
+func New(p ProtocolType, o Options) Transport {
+	switch p {
 	case TLS:
-		cert, err := tls.LoadX509KeyPair(opts.TlsCertPath, opts.TlsKeyPath)
-		if err != nil {
-			return nil, err
+		return tlsTransport{
+			address:    o.Address,
+			serverName: o.Authority,
+			insecure:   o.Insecure,
+			certPath:   o.TlsCertPath,
+			keyPath:    o.TlsKeyPath,
 		}
-		return tls.Listen("tcp", opts.Address, &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			NextProtos:   []string{"h2", "http/1.1"},
-		})
 	case XHTTP:
-		return ListenXhttp(opts)
-	case TCP:
-		return net.Listen("tcp", opts.Address)
+		return xhttpTransport{
+			address:   o.Address,
+			path:      o.Path,
+			authority: o.Authority,
+			padding:   o.Padding,
+			useTLS:    o.UseTLS,
+			insecure:  o.Insecure,
+			certPath:  o.TlsCertPath,
+			keyPath:   o.TlsKeyPath,
+		}
+	default:
+		return tcpTransport{address: o.Address}
 	}
-	return nil, errors.New("unknown transport " + protocol.Str())
 }
 
-func clientTlsConfig(opts Options) *tls.Config {
-	config := &tls.Config{
-		ServerName:         opts.Authority,
-		InsecureSkipVerify: opts.Insecure,
-		NextProtos:         []string{"h2", "http/1.1"},
-	}
-	if config.ServerName == "" {
-		host, _, err := net.SplitHostPort(opts.Address)
-		if err == nil {
-			config.ServerName = host
-		}
-	}
-	return config
-}
+// Dial and Listen are one-call shorthands over the flat options, for the
+// "I just want a conn/listener now" case (tests, quick setup). Normal code
+// builds a Transport once with New and reuses it.
+func Dial(p ProtocolType, o Options) (net.Conn, error) { return New(p, o).Dial() }
+
+func Listen(p ProtocolType, o Options) (net.Listener, error) { return New(p, o).Listen() }

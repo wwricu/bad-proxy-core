@@ -1,12 +1,11 @@
-package proxy
+package core
 
 import (
 	"errors"
-	"log"
 	"net"
 	"time"
 
-	"github.com/wwricu/bad-proxy-core/metrics"
+	"github.com/wwricu/bad-proxy-core/logger"
 	"github.com/wwricu/bad-proxy-core/protocols"
 	"github.com/wwricu/bad-proxy-core/transport"
 )
@@ -35,14 +34,12 @@ func (c InboundConfig) credentials() []string {
 }
 
 type Inbound struct {
-	listener      net.Listener
-	address       string
-	protocol      string
-	secrets       []string
-	transportType transport.ProtocolType
-	opts          transport.Options
-	handshake     time.Duration
-	mp            *metrics.ProtoStats // cached at construction: hot path is one atomic
+	listener  net.Listener
+	address   string
+	protocol  string
+	secrets   []string
+	transport transport.Transport
+	handshake time.Duration
 }
 
 func NewInbound(c InboundConfig, set settings) Inbound {
@@ -50,75 +47,73 @@ func NewInbound(c InboundConfig, set settings) Inbound {
 	if proto == "" {
 		proto = BTP
 	}
-	transportType := transport.GetProtocol(c.Transport)
-	if transportType == "" {
-		transportType = transport.TCP
-	}
+	address := net.JoinHostPort(c.Host, c.Port)
 	return Inbound{
 		protocol:  proto,
 		secrets:   c.credentials(),
-		mp:        metrics.Default.Proto(proto),
 		handshake: set.handshakeTimeout,
-		address:   net.JoinHostPort(c.Host, c.Port),
-		opts: transport.Options{
-			Address:     net.JoinHostPort(c.Host, c.Port),
-			Path:        c.Path,
-			TlsCertPath: c.TlsCertPath,
-			TlsKeyPath:  c.TlsKeyPath,
-		},
-		transportType: transportType,
+		address:   address,
+		transport: transport.New(
+			transport.GetProtocol(c.Transport),
+			transport.Options{
+				Address:     address,
+				Path:        c.Path,
+				TlsCertPath: c.TlsCertPath,
+				TlsKeyPath:  c.TlsKeyPath,
+			},
+		),
 	}
 }
 
-func (inbound *Inbound) Listen() (err error) {
-	inbound.listener, err = transport.Listen(inbound.transportType, inbound.opts)
+func (in *Inbound) Listen() (err error) {
+	in.listener, err = in.transport.Listen()
 	return
 }
 
-func (inbound *Inbound) Accept() (inConn InboundConnect, err error) {
+func (in *Inbound) Accept() (inConn InboundConnect, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Println("accept panic:", r)
+			logger.Errorf("accept panic: %v", r)
 			err = errors.New("panic in accept")
 		}
 	}()
 
-	conn, err := inbound.listener.Accept()
+	conn, err := in.listener.Accept()
 	if err != nil {
 		return
 	}
 
-	if deadlineErr := conn.SetDeadline(time.Now().Add(inbound.handshake)); deadlineErr != nil {
+	if deadlineErr := conn.SetDeadline(time.Now().Add(in.handshake)); deadlineErr != nil {
 		_ = conn.Close()
 		return nil, deadlineErr
 	}
-	switch inbound.protocol {
+	switch in.protocol {
 	case HTTP:
 		inConn = protocols.NewHttpInbound(conn)
 	case BTP:
-		inConn = protocols.NewBtpInbound(conn, inbound.secrets)
+		inConn = protocols.NewBtpInbound(conn, in.secrets)
 	case SOCKS:
 		inConn = protocols.NewSocks5Inbound(conn)
 	case TROJAN:
-		inConn = protocols.NewTrojanInbound(conn, inbound.secrets)
+		inConn = protocols.NewTrojanInbound(conn, in.secrets)
 	case VLESS:
-		inConn, err = protocols.NewVlessInbound(conn, inbound.secrets)
+		inConn, err = protocols.NewVlessInbound(conn, in.secrets)
 		if err != nil {
 			_ = conn.Close()
 			return nil, err
 		}
 	default:
 		_ = conn.Close()
-		return nil, errors.New("unknown inbound protocol " + inbound.protocol)
+		return nil, errors.New("unknown inbound protocol " + in.protocol)
 	}
 	return inConn, nil
 }
 
-func (inbound *Inbound) Close() error {
-	if inbound.listener == nil {
+func (in *Inbound) Close() error {
+	if in.listener == nil {
 		return nil
 	}
-	return inbound.listener.Close()
+	return in.listener.Close()
 }
 
 type InboundConnect interface {

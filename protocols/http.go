@@ -6,18 +6,24 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/wwricu/bad-proxy-core/common"
 )
 
-// HTTP inbound supports the two shapes a proxy client sends:
-//
-//	CONNECT host:port HTTP/1.1        (tunnel, then raw bytes)
-//	METHOD scheme://host/path HTTP/1.1 (plain proxy, absolute-form)
-//
-// The request head is read field by field from the buffered stream, so a
-// header split across TCP segments no longer truncates the parse. For
-// non-CONNECT requests the original absolute-form request line is relayed to
-// the target unchanged; origin servers are required to accept it (RFC 7230
-// 5.4) and in practice do.
+/*
+HTTP inbound (client-facing) supports the two shapes a proxy client sends:
+
+	CONNECT host:port HTTP/1.1        (tunnel, then raw bytes)
+	METHOD scheme://host/path HTTP/1.1 (plain proxy, absolute-form)
+
+The request head is read field by field from the buffered stream, so a
+header split across TCP segments no longer truncates the parse. For
+non-CONNECT requests the original absolute-form request line is rewritten to
+origin form and re-injected ahead of the body, as RFC 7230 5.4 requires of a
+proxy. HTTP has no outbound direction in this build (direct routing uses the
+freedom outbound).
+*/
+
 type HttpRequest struct {
 	Method         string
 	Address        string
@@ -26,7 +32,7 @@ type HttpRequest struct {
 
 const maxHttpHeadBytes = 16 * 1024
 
-func readRequestHead(in *Buffered) (HttpRequest, []byte, error) {
+func readRequestHead(in *common.Buffered) (HttpRequest, []byte, error) {
 	var raw bytes.Buffer
 	line, err := readCrlfLine(in, maxHttpHeadBytes)
 	if err != nil {
@@ -71,7 +77,7 @@ func originFormTarget(target string) string {
 	return u.RequestURI()
 }
 
-func readCrlfLine(in *Buffered, limit int) (string, error) {
+func readCrlfLine(in *common.Buffered, limit int) (string, error) {
 	var sb strings.Builder
 	atEol := false
 	for sb.Len() < limit {
@@ -148,11 +154,11 @@ func allDigits(s string) bool {
 }
 
 type HttpInbound struct {
-	*Buffered
+	*common.Buffered
 }
 
 func NewHttpInbound(conn net.Conn) *HttpInbound {
-	return &HttpInbound{Buffered: NewBuffered(conn)}
+	return &HttpInbound{Buffered: common.NewBuffered(conn)}
 }
 
 func (in *HttpInbound) Connect() (targetAddr string, err error) {

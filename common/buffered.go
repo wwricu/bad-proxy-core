@@ -1,4 +1,4 @@
-package protocols
+package common
 
 import (
 	"bufio"
