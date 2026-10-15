@@ -17,7 +17,7 @@ sits behind a proxy.
 * Rule-based routing (full / domain / keyword / regexp lists, optionally the
   `rules.dat` GeoIP-style dataset) selecting different outbounds per target.
 
-As of **v2.0.0-beta1** the per-endpoint transport options live in a nested
+As of **v2.0.0-beta2** the per-endpoint transport options live in a nested
 `"transport": { … }` object (they used to be flat keys on the endpoint), and
 the client-side `insecure` toggle was removed — the client always verifies the
 server certificate. See [Transport object](#transport-object).
