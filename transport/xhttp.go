@@ -116,32 +116,77 @@ func (t xhttpTransport) Dial() (net.Conn, error) {
 		DialContext:           func(ctx context.Context, _, _ string) (net.Conn, error) { return net.Dial("tcp", t.address) },
 		ResponseHeaderTimeout: 30 * time.Second,
 	}
-	// RoundTrip returns as soon as response headers arrive; the server sends
-	// them before the body is ever read, so the open stream cannot deadlock.
-	resp, err := tr.RoundTrip(req)
-	if err != nil {
-		pw.Close()
-		cancel()
-		tr.CloseIdleConnections()
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		resp.Body.Close()
-		pw.Close()
-		cancel()
-		tr.CloseIdleConnections()
-		return nil, fmt.Errorf("xhttp: server answered %d: %s", resp.StatusCode, string(body))
-	}
 
-	conn := &XhttpConn{reader: resp.Body, remote: parseAddr(t.address)}
-	conn.writer = pw
+	// Fire the request without blocking on the response. The server flushes its
+	// 200 before reading the body, but a buffering reverse proxy (Caddy) holds
+	// those response headers until the request body yields bytes -- and our
+	// caller only writes the handshake after Dial returns. Waiting here would
+	// deadlock the handshake against such a proxy, so resolve the response
+	// lazily on the first read and let the handshake flow immediately.
+	respCh := make(chan *http.Response, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := tr.RoundTrip(req)
+		if err != nil {
+			// Unblock any handshake write already parked on the pipe.
+			pw.CloseWithError(err)
+			errCh <- err
+			return
+		}
+		respCh <- resp
+	}()
+
+	conn := &XhttpConn{writer: pw, remote: parseAddr(t.address)}
+	conn.reader = &lazyBody{
+		respCh: respCh,
+		errCh:  errCh,
+		onFail: func(err error) {
+			pw.CloseWithError(err)
+			cancel()
+			tr.CloseIdleConnections()
+		},
+	}
 	conn.onClose = func() {
 		pw.Close()
 		cancel()
 		tr.CloseIdleConnections()
 	}
 	return conn, nil
+}
+
+// lazyBody waits for the HTTP response (which only arrives once the request
+// body has started flowing) and then reads from it. A status other than 200 is
+// surfaced as a read error and tears the tunnel down, so a request the front
+// rejected fails on the first read instead of hanging the handshake.
+type lazyBody struct {
+	respCh chan *http.Response
+	errCh  chan error
+	onFail func(error)
+
+	resp  *http.Response
+	err   error
+	ready bool
+}
+
+func (l *lazyBody) Read(p []byte) (int, error) {
+	if !l.ready {
+		select {
+		case l.resp = <-l.respCh:
+			if l.resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(io.LimitReader(l.resp.Body, 512))
+				_ = l.resp.Body.Close()
+				l.err = fmt.Errorf("xhttp: server answered %d: %s", l.resp.StatusCode, string(body))
+				l.onFail(l.err)
+			}
+		case l.err = <-l.errCh:
+			// The RoundTrip goroutine already closed the pipe writer.
+		}
+		l.ready = true
+	}
+	if l.err != nil {
+		return 0, l.err
+	}
+	return l.resp.Body.Read(p)
 }
 
 // ---------------------------------------------------------------- server

@@ -219,3 +219,73 @@ func rawXhttpPost(t *testing.T, addr, path string) (int, string) {
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(body)
 }
+
+// TestXhttpBufferingProxy guards the handshake-deadlock fix. A buffering
+// reverse proxy (e.g. Caddy) withholds the server's flushed 200 until the
+// request body yields bytes. A client that waited for the response before
+// writing its handshake would deadlock against such a proxy; the client must
+// let the body flow immediately and resolve the response lazily.
+func TestXhttpBufferingProxy(t *testing.T) {
+	const addr = "127.0.0.1:14558"
+
+	// Server waits for request body bytes BEFORE responding, mimicking a reverse
+	// proxy that withholds the upstream's flushed response headers until the
+	// client starts writing. A client that blocks waiting for the response
+	// before sending its handshake deadlocks here; the fix writes the body
+	// through the pipe and reads the response lazily. We read exactly the
+	// handshake length, not to EOF - a duplex stream never closes its body.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/buf", func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, 4)
+		if _, err := io.ReadFull(r.Body, buf); err != nil {
+			t.Errorf("server read body: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", xhttpContentType)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(append([]byte("echo:"), buf...))
+	})
+	srv := &http.Server{Handler: mux}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		conn, err := DialXhttp(Options{Address: addr, Path: "/buf"})
+		if err != nil {
+			done <- fmt.Errorf("dial: %w", err)
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		// Write the "handshake" first; the response is only available after the
+		// server has drained this body.
+		if _, err := conn.Write([]byte("ping")); err != nil {
+			done <- fmt.Errorf("write: %w", err)
+			return
+		}
+		resp := make([]byte, 9)
+		if _, err := io.ReadFull(conn, resp); err != nil {
+			done <- fmt.Errorf("read: %w", err)
+			return
+		}
+		if string(resp) != "echo:ping" {
+			done <- fmt.Errorf("got %q", resp)
+			return
+		}
+		done <- nil
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("deadlock: client blocked waiting for a response it never received")
+	}
+}
