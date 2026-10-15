@@ -1,7 +1,6 @@
 package router
 
 import (
-	"regexp"
 	"strings"
 
 	"github.com/wwricu/bad-proxy-core/logger"
@@ -12,49 +11,7 @@ type Config struct {
 	Rules []string `json:"rules"`
 }
 
-type Matcher interface {
-	MatchAny(key string) bool
-}
-
-type FullMatcher map[string]bool
-
-func (matcher FullMatcher) MatchAny(key string) bool {
-	_, exist := matcher[key]
-	return exist
-}
-
-func NewFullMatcher(fullDomains []string) Matcher {
-	var fullMatcher FullMatcher = make(map[string]bool, len(fullDomains))
-	for _, domain := range fullDomains {
-		fullMatcher[domain] = true
-	}
-	return fullMatcher
-}
-
-type RegexMatcher []*regexp.Regexp
-
-func NewRegexMatcher(regexStrings []string) Matcher {
-	var regexMatcher RegexMatcher = make([]*regexp.Regexp, 0, len(regexStrings))
-	for _, ex := range regexStrings {
-		compiled, err := regexp.Compile(ex)
-		if err != nil {
-			logger.Warnf("bad rule regex, skipped: %s", ex)
-			continue
-		}
-		regexMatcher = append(regexMatcher, compiled)
-	}
-	return regexMatcher
-}
-
-func (matcher RegexMatcher) MatchAny(key string) bool {
-	for _, re := range matcher {
-		if re.MatchString(key) {
-			return true
-		}
-	}
-	return false
-}
-
+// Router composes the four matchers (see matcher.go) and asks each in turn.
 type Router struct {
 	Tag      string
 	matchers []Matcher
