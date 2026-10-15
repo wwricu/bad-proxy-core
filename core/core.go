@@ -41,14 +41,10 @@ type Config struct {
 	RouterPath string
 }
 
-const (
-	BTP     = "btp"
-	SOCKS   = "socks"
-	HTTP    = "http"
-	TROJAN  = "trojan"
-	VLESS   = "vless"
-	FREEDOM = "freedom"
-)
+// FREEDOM is core's direct-connect routing target, not a handshake protocol:
+// it opens the target address itself instead of dialing an upstream, so the
+// handshake protocol names live with the protocols package instead.
+const FREEDOM = "freedom"
 
 func newProxy(config Config) (newProxy Proxy, err error) {
 	settings, err := config.resolveSettings()

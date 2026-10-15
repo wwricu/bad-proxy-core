@@ -1,7 +1,6 @@
 package core
 
 import (
-	"errors"
 	"net"
 	"time"
 
@@ -35,7 +34,7 @@ type Outbound struct {
 func NewOutbound(c OutboundConfig, set settings) Outbound {
 	proto := c.Protocol
 	if proto == "" {
-		proto = BTP
+		proto = protocols.BTP
 	}
 	address := ""
 	if c.Host != "" {
@@ -80,22 +79,11 @@ func (ob *Outbound) Dial(targetAddr string) (out OutboundConnect, err error) {
 			_ = conn.Close()
 			return nil, err
 		}
-		switch ob.protocol {
-		case BTP:
-			out = protocols.NewBtpOutbound(conn, ob.secret)
-		case TROJAN:
-			out = protocols.NewTrojanOutbound(conn, ob.secret)
-		case SOCKS:
-			out = protocols.NewSocks5Outbound(conn)
-		case VLESS:
-			out, err = protocols.NewVlessOutbound(conn, ob.secret)
-			if err != nil {
-				_ = conn.Close()
-				return nil, err
-			}
-		default:
-			_ = conn.Close()
-			return nil, errors.New("unknown outbound protocol " + ob.protocol)
+		// protocol matching lives in the protocols package; NewOutbound owns the
+		// conn and closes it if the handshake setup fails.
+		out, err = protocols.NewOutbound(ob.protocol, ob.secret, conn)
+		if err != nil {
+			return nil, err
 		}
 	}
 
@@ -107,7 +95,6 @@ func (ob *Outbound) Dial(targetAddr string) (out OutboundConnect, err error) {
 	return out, nil
 }
 
-type OutboundConnect interface {
-	Connect(targetAddr string) error
-	net.Conn
-}
+// OutboundConnect is the handshake+relay view of an upstream connection; the
+// concrete protocols and their matching live in the protocols package.
+type OutboundConnect = protocols.Outbound

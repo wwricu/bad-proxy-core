@@ -45,7 +45,7 @@ type Inbound struct {
 func NewInbound(c InboundConfig, set settings) Inbound {
 	proto := c.Protocol
 	if proto == "" {
-		proto = BTP
+		proto = protocols.BTP
 	}
 	address := net.JoinHostPort(c.Host, c.Port)
 	return Inbound{
@@ -87,24 +87,11 @@ func (in *Inbound) Accept() (inConn InboundConnect, err error) {
 		_ = conn.Close()
 		return nil, deadlineErr
 	}
-	switch in.protocol {
-	case HTTP:
-		inConn = protocols.NewHttpInbound(conn)
-	case BTP:
-		inConn = protocols.NewBtpInbound(conn, in.secrets)
-	case SOCKS:
-		inConn = protocols.NewSocks5Inbound(conn)
-	case TROJAN:
-		inConn = protocols.NewTrojanInbound(conn, in.secrets)
-	case VLESS:
-		inConn, err = protocols.NewVlessInbound(conn, in.secrets)
-		if err != nil {
-			_ = conn.Close()
-			return nil, err
-		}
-	default:
-		_ = conn.Close()
-		return nil, errors.New("unknown inbound protocol " + in.protocol)
+	// protocol matching lives in the protocols package; NewInbound owns the
+	// conn and closes it if the handshake setup fails.
+	inConn, err = protocols.NewInbound(in.protocol, conn, in.secrets)
+	if err != nil {
+		return nil, err
 	}
 	return inConn, nil
 }
@@ -116,12 +103,7 @@ func (in *Inbound) Close() error {
 	return in.listener.Close()
 }
 
-type InboundConnect interface {
-	// Connect performs the handshake and returns the relay target address.
-	// Any bytes read past the header stay available through Read.
-	Connect() (string, error)
-	// Fallback answers well-known probes (e.g. a plain HTTP GET) when the
-	// handshake fails, to look like an ordinary web service.
-	Fallback()
-	net.Conn
-}
+// InboundConnect is the handshake+relay view of an accepted connection; the
+// concrete protocol implementations and their matching live in the protocols
+// package, so core depends on only this interface.
+type InboundConnect = protocols.Inbound
