@@ -2,10 +2,10 @@ package proxy
 
 import (
 	"errors"
-	"log"
 	"net"
 	"time"
 
+	"github.com/wwricu/bad-proxy-core/metrics"
 	"github.com/wwricu/bad-proxy-core/protocols"
 	"github.com/wwricu/bad-proxy-core/transport"
 )
@@ -30,6 +30,7 @@ type Outbound struct {
 	secret        string
 	transportType transport.ProtocolType
 	opts          transport.Options
+	mp            *metrics.ProtoStats
 }
 
 func NewOutbound(c OutboundConfig) Outbound {
@@ -45,6 +46,7 @@ func NewOutbound(c OutboundConfig) Outbound {
 		tag:           c.Tag,
 		protocol:      proto,
 		secret:        c.Secret,
+		mp:            metrics.Default.Proto(proto),
 		transportType: transport.GetProtocol(c.Transport),
 		opts: transport.Options{
 			Address:   address,
@@ -58,6 +60,14 @@ func NewOutbound(c OutboundConfig) Outbound {
 }
 
 func (outbound *Outbound) Dial(targetAddr string) (out OutboundConnect, err error) {
+	// one atomic per dial, replaces the former per-connection stderr log
+	defer func() {
+		if err != nil {
+			outbound.mp.DialFail.Add(1)
+		} else {
+			outbound.mp.DialOK.Add(1)
+		}
+	}()
 	// direct relay to the target, no upstream
 	if outbound.protocol == FREEDOM {
 		conn, err := net.DialTimeout("tcp", targetAddr, 15*time.Second)
@@ -97,7 +107,6 @@ func (outbound *Outbound) Dial(targetAddr string) (out OutboundConnect, err erro
 			_ = conn.Close()
 			return nil, errors.New("unknown outbound protocol " + outbound.protocol)
 		}
-		log.Println(outbound.protocol, "connect to", outbound.opts.Address)
 	}
 
 	if err = out.Connect(targetAddr); err != nil {

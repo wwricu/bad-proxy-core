@@ -6,6 +6,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/wwricu/bad-proxy-core/metrics"
 	"github.com/wwricu/bad-proxy-core/protocols"
 	"github.com/wwricu/bad-proxy-core/transport"
 )
@@ -40,6 +41,7 @@ type Inbound struct {
 	secrets       []string
 	transportType transport.ProtocolType
 	opts          transport.Options
+	mp            *metrics.ProtoStats // cached at construction: hot path is one atomic
 }
 
 func NewInbound(c InboundConfig) Inbound {
@@ -54,6 +56,7 @@ func NewInbound(c InboundConfig) Inbound {
 	return Inbound{
 		protocol: proto,
 		secrets:  c.credentials(),
+		mp:       metrics.Default.Proto(proto),
 		address:  net.JoinHostPort(c.Host, c.Port),
 		opts: transport.Options{
 			Address:     net.JoinHostPort(c.Host, c.Port),

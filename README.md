@@ -95,8 +95,14 @@ Listen plainly on loopback and let nginx do TLS — see
 
 ## Configuration reference
 
-Top level: `inbounds` (list), `outbounds` (list), `routers` (list, optional).
-There must always be an outbound with an empty `"tag"` — it is the default.
+Top level: `inbounds` (list), `outbounds` (list), `routers` (list, optional),
+`stats` (string, optional). There must always be an outbound with an empty
+`"tag"` — it is the default.
+
+`stats` is a duration string (`"30s"`, `"5m"`): the engine then logs one
+`metrics` summary line per interval. Empty by default - a loaded but quiet
+process emits nothing on that channel.
+
 
 ### Inbound fields
 
@@ -311,6 +317,7 @@ protocols/          handshake + stream framing per protocol
                     never truncate on TCP fragmentation, target codec
   vless.go trojan.go btp.go socks.go http.go free.go
 transport/          how bytes reach the peer: tcp / tls / xhttp
+metrics/            atomic counters + periodic stats line
 router/ structure/  rule matching (gob rules.dat, Aho-Corasick domain
                     matcher, LRU replay cache, ring queue)
 ```
@@ -322,6 +329,24 @@ cleared → two copy directions pumping through 64 KiB buffers from a
 interfaces: on Windows the `TCPConn→TCPConn` TransmitFile path measured
 ~80 MB/s on loopback where the plain buffered loop passes ~400 MB/s (and
 the pooled buffer means zero relay allocations per tunnel).
+
+## Observability
+
+The `metrics` package (stdlib-only) keeps every counter in an
+`atomic.Int64`; call sites cache their `*ProtoStats` pointer at startup, so
+a hot-path event costs one atomic add and nothing else. With `"stats":
+"30s"` the engine logs one line like:
+
+```
+stats: tunnels=12 up=1.1MiB down=48.2MiB copy_err=0 | vless acc=340 hs_fail=2 dial_ok=0 dial_fail=0 | freedom acc=0 hs_fail=0 dial_ok=338 dial_fail=4
+```
+
+`tunnels` is the live relay gauge, `up`/`down` count relay bytes per chunk,
+and each configured protocol reports accepts, failed handshakes (probes and
+wrong credentials show up here) and upstream dial outcomes. Genuine errors
+(failing inbounds, copy errors, panics) still log as before; the old
+per-connection `vless connect to …` stderr line is gone - it serialized
+every accept through the log lock and is now a counter.
 
 ## Testing
 

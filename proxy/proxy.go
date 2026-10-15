@@ -9,8 +9,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/wwricu/bad-proxy-core/metrics"
 	"github.com/wwricu/bad-proxy-core/router"
 )
 
@@ -24,9 +26,10 @@ var relayBufPool = sync.Pool{
 }
 
 type Proxy struct {
-	inbounds  []Inbound
-	outbounds map[string]*Outbound
-	routers   []router.Router
+	inbounds   []Inbound
+	outbounds  map[string]*Outbound
+	routers    []router.Router
+	statsEvery time.Duration
 }
 
 type Config struct {
@@ -34,6 +37,9 @@ type Config struct {
 	Outbounds  []OutboundConfig `json:"outbounds"`
 	Router     []router.Config  `json:"routers"`
 	RouterPath string
+	// Stats is a duration string ("30s", "5m"); the engine logs one metrics
+	// summary line per interval. Empty (default) keeps the process silent.
+	Stats string `json:"stats"`
 }
 
 const (
@@ -74,10 +80,24 @@ func newProxy(config Config) (newProxy Proxy, err error) {
 	if _, exist := newProxy.outbounds[""]; exist != true {
 		return Proxy{}, errors.New("no default outbound, add one with empty \"tag\" (use \"" + FREEDOM + "\" for direct)")
 	}
+	if config.Stats != "" {
+		every, err := time.ParseDuration(config.Stats)
+		if err != nil {
+			return Proxy{}, errors.New("bad stats interval " + config.Stats)
+		}
+		newProxy.statsEvery = every
+	}
 	return
 }
 
 func (proxy Proxy) Start() {
+	if proxy.statsEvery > 0 {
+		go func() {
+			for range time.Tick(proxy.statsEvery) {
+				log.Println("stats:", metrics.Default.Snapshot())
+			}
+		}()
+	}
 	for i := range proxy.inbounds {
 		inbound := proxy.inbounds[i]
 		go func(inbound *Inbound) {
@@ -110,11 +130,12 @@ func (proxy Proxy) serve(inbound *Inbound) {
 			continue
 		}
 		failures = 0
-		go proxy.proxy(in)
+		inbound.mp.Accepted.Add(1)
+		go proxy.proxy(in, inbound.mp)
 	}
 }
 
-func (proxy Proxy) proxy(in InboundConnect) {
+func (proxy Proxy) proxy(in InboundConnect, mp *metrics.ProtoStats) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Println("relay panic:", r)
@@ -124,6 +145,7 @@ func (proxy Proxy) proxy(in InboundConnect) {
 
 	address, err := in.Connect() // handshake
 	if err != nil {
+		mp.HandshakeFail.Add(1)
 		log.Println("inbound connect failed:", err)
 		in.Fallback()
 		return
@@ -140,14 +162,19 @@ func (proxy Proxy) proxy(in InboundConnect) {
 		_ = out.Close()
 	}()
 
+	metrics.Default.TunnelsActive.Add(1)
+	defer metrics.Default.TunnelsActive.Add(-1)
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := relayCopy(in, out); err != nil && !errors.Is(err, net.ErrClosed) {
+		if _, err := relayCopy(in, &metrics.Default.BytesDown, out); err != nil && !errors.Is(err, net.ErrClosed) {
+			metrics.Default.CopyErr.Add(1)
 			log.Printf("copy out->in: %v\n", err)
 		}
 	}()
-	if _, err = relayCopy(out, in); err != nil && !errors.Is(err, net.ErrClosed) {
+	if _, err = relayCopy(out, &metrics.Default.BytesUp, in); err != nil && !errors.Is(err, net.ErrClosed) {
+		metrics.Default.CopyErr.Add(1)
 		log.Printf("copy in->out: %v\n", err)
 	}
 	<-done
@@ -156,14 +183,26 @@ func (proxy Proxy) proxy(in InboundConnect) {
 // relay buffers come from a pool. The thin wrappers hide ReadFrom/WriteTo
 // so io.CopyBuffer runs its plain chunked loop: on Windows the
 // TCPConn->TCPConn TransmitFile "splice" measured ~80 MB/s while a 64 KiB
-// buffered loop passes ~400 MB/s over the same loopback path.
+// buffered loop passes ~400 MB/s over the same loopback path. The counting
+// writer adds one atomic per 64 KiB chunk - free next to the syscalls.
 type plainWriter struct{ io.Writer }
 type plainReader struct{ io.Reader }
 
-func relayCopy(dst io.Writer, src io.Reader) (int64, error) {
+type countingWriter struct {
+	io.Writer
+	n *atomic.Int64
+}
+
+func (c countingWriter) Write(p []byte) (int, error) {
+	written, err := c.Writer.Write(p)
+	c.n.Add(int64(written))
+	return written, err
+}
+
+func relayCopy(dst io.Writer, counter *atomic.Int64, src io.Reader) (int64, error) {
 	buf := relayBufPool.Get().(*[]byte)
 	defer relayBufPool.Put(buf)
-	return io.CopyBuffer(plainWriter{dst}, plainReader{src}, *buf)
+	return io.CopyBuffer(plainWriter{countingWriter{dst, counter}}, plainReader{src}, *buf)
 }
 
 func (proxy Proxy) route(address string) Outbound {
