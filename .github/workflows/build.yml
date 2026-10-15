@@ -4,13 +4,17 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions: write-all
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          cache: false
           go-version-file: go.mod
+      - name: Test
+        run: go test ./...
       - run: |
           chmod +x ./build.sh
           ./build.sh ${{ vars.DIST_NAME }}

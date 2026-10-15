@@ -13,13 +13,32 @@ loopback port.
   a direct **freedom** outbound.
 * Transports: **raw TCP**, **TLS**, and **xhttp** (long-lived duplex HTTP
   POST, in the spirit of Xray's XHTTP stream mode).
-* Rule-based routing (full / domain / regexp lists, optionally the
+* Rule-based routing (full / domain / keyword / regexp lists, optionally the
   `rules.dat` GeoIP-style dataset) selecting different outbounds per target.
 
 WebSocket (`ws`/`wss`) and the old half-implemented `http2` transport were
 removed: WebSocket duplicated what xhttp does while adding a third-party
 dependency and per-message framing overhead, and the old `http2` transport
 had no working client at all. See [protocol notes](#protocol-notes).
+
+## Supported protocols at a glance
+
+Application-layer protocol — what the tunnel speaks. The same name is used on
+both ends (`inbound` on the server, `outbound` on the client):
+
+| app protocol | inbound | outbound | tcp | tls | xhttp | wire-compatible with Xray |
+|---|---|---|:-:|:-:|:-:|---|
+| **VLESS** | ✅ | ✅ | ✅ | ✅ | ✅ | yes (vless over tcp/tls) |
+| **Trojan** | ✅ | ✅ | ✅ | ✅ | ✅ | byte layout matches; not separately verified |
+| **BTP v2** | ✅ | ✅ | ✅ | ✅ | ✅ | no — native to BPC |
+| **SOCKS5** | ✅ (client-facing) | ✅ (upstream) | — | — | — | n/a |
+| **HTTP proxy** | ✅ (client-facing) | — | — | — | — | n/a |
+| **freedom** | — | ✅ (direct dial) | ✅ | — | — | n/a |
+
+`socks` / `http` inbounds are how your browser or `curl` enters BPC; they are
+unauthenticated, so keep them on loopback. `freedom` is the outbound a server
+uses to hand the decoded target straight to the internet. Transports apply to
+the app protocols above; `tls` and `xhttp` combine (`xhttp` over real TLS).
 
 ## Requirements
 
@@ -87,6 +106,29 @@ Point applications at `SOCKS5 127.0.0.1:1080` (remote DNS via
 ```sh
 curl -s --socks5-hostname 127.0.0.1:1080 https://example.com
 ```
+
+### Switching to Trojan or BTP
+
+The structure is identical — change `protocol`, the credential field, and
+(keep the transport you like). On **both** ends:
+
+| | VLESS | Trojan | BTP v2 |
+|---|---|---|---|
+| `protocol` | `vless` | `trojan` | `btp` |
+| server credential | `users: ["<uuid>"]` | `secret: "<password>"` | `secret: "<hmac-key>"` |
+| client credential | `secret: "<uuid>"` | `secret: "<password>"` | `secret: "<hmac-key>"` |
+
+Trojan over `tls` (no xhttp) server inbound:
+
+```json
+{ "protocol": "trojan", "host": "0.0.0.0", "port": "443",
+  "secret": "your-password", "transport": "tls",
+  "tls_cert_path": "/etc/bad-proxy/server.crt", "tls_key_path": "/etc/bad-proxy/server.key" }
+```
+
+BTP is BPC's native protocol: the secret is an HMAC key that is **never put on
+the wire** (the header carries a keyed digest), and a failed handshake that
+looks like an HTTP GET is answered with a decoy page.
 
 ### Server behind nginx
 
@@ -162,11 +204,14 @@ Each rule is either `full:<host>`, `domain:<suffix>`, `keyword:<substring>`,
 `regexp:<pattern>`, or a bare name resolved from `rules.dat` (`--router-path`,
 default `rules.dat`; a missing file only disables named lists). The first
 matching router selects that tag's outbound; otherwise the default (empty tag)
-is used. `rules.dat` is the gob-encoded domain-list dataset produced by
-`build.sh`. `domain:<suffix>` matches on label boundaries — `example.org`
-matches `example.org` and `a.example.org` but not `notexample.org`; for plain
-substring matching use `keyword:<substring>` (Aho-Corasick, one scan over all
-keywords), which ignores boundaries — `bing` also matches `www.bing.com`.
+is used. `rules.dat` is a gob-encoded domain-list dataset that `build.sh`
+downloads (from a domain-list-community release) and bundles into the
+artifacts; it is optional — without it only the named `geosite:`/`geoip:`
+lists are unavailable. `domain:<suffix>` matches on label boundaries —
+`example.org` matches `example.org` and `a.example.org` but not
+`notexample.org`; for plain substring matching use `keyword:<substring>`
+(Aho-Corasick, one scan over all keywords), which ignores boundaries — `bing`
+also matches `www.bing.com`.
 
 ## Protocol notes
 
@@ -333,8 +378,9 @@ protocols/          handshake + stream framing per protocol
   vless.go trojan.go btp.go socks.go http.go free.go
 transport/          how bytes reach the peer: tcp / tls / xhttp
 metrics/            atomic counters + periodic stats line
-router/ structure/  rule matching (gob rules.dat, Aho-Corasick domain
-                    matcher, LRU replay cache, ring queue)
+router/ structure/  rule matching (gob rules.dat; full map, reverse-label
+                    trie for domain:, Aho-Corasick for keyword:, regexp;
+                    LRU replay cache and ring queue live in structure/)
 ```
 
 Relay lifecycle: accept → 10 s handshake deadline → protocol `Connect()`

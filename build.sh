@@ -1,42 +1,72 @@
-declare -A build_targets
-build_targets=(["amd64"]="linux windows darwin" ["arm64"]="linux android darwin")
-rule_filename="rules.dat"
-dist_name=${1}
+#!/usr/bin/env bash
+# Build the full cross-compiled artifact matrix into ./dist.
+#   ./build.sh <dist_name>
+# Pure stdlib, so every target builds with CGO disabled; the Go toolchain does
+# that automatically when GOOS != host, but we set it explicitly for
+# reproducibility.
+set -euo pipefail
 
-function prepare() {
-    cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1 && pwd)" || exit 1  # change to project directory
-    if [ ! -d "./dist"  ]
-    then
-      mkdir ./dist
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# arch -> space separated list of GOOS values
+declare -A build_targets=(["amd64"]="linux windows darwin" ["arm64"]="linux android darwin")
+rule_filename="rules.dat"
+dist_name=${1:?usage: build.sh <dist_name>}
+
+mkdir -p ./dist
+
+prepare_rules() {
+    # rules.dat is OPTIONAL: a missing file only disables named geosite/geoip
+    # lists (see router.NewRouter), inline rules still work. Never let a flaky
+    # third-party download abort the whole build.
+    if [ -f "${rule_filename}" ]; then
+        return 0
     fi
-    wget https://github.com/HerrKKK/domain-list-community/releases/latest/download/${rule_filename}
+    local url="https://github.com/HerrKKK/domain-list-community/releases/latest/download/${rule_filename}"
+    if command -v wget >/dev/null 2>&1; then
+        wget -O "${rule_filename}" "$url" || rm -f "${rule_filename}"
+    elif command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "${rule_filename}" "$url" || rm -f "${rule_filename}"
+    else
+        echo "neither wget nor curl available; skipping ${rule_filename}" >&2
+    fi
+    if [ ! -s "${rule_filename}" ]; then
+        echo "WARNING: ${rule_filename} unavailable; named routing rules will be disabled at runtime" >&2
+        rm -f "${rule_filename}"
+    fi
 }
 
-function main() {
-    prepare
-    for arch in ${!build_targets[*]}
-      do
-        go_os_array=${build_targets[$arch]}
-        for os in ${go_os_array[@]}
-        do
-          export GOARCH=${arch}
-          export GOOS=${os}
-          target="${dist_name}-${GOOS}-${GOARCH}"
-          if [ "${GOOS}" == "windows" ]
-          then
-            go build -o "./${target}.exe"
-            zip "${target}.zip" "./${target}.exe" ${rule_filename} config.json
-            go build -o "./${target}_cli.exe" -ldflags="-H windowsgui"
-            zip "${target}.zip" "./${target}_cli.exe" ${rule_filename} config.json
-          else
-            go build -o "./${target}"
-            tar czvf "${dist_name}-${GOOS}-${GOARCH}.tar.gz" "./${target}" ${rule_filename} config.json
-          fi
-        done
-      done
+go_flags=(-trimpath -ldflags "-s -w")
 
-    mv ./*.tar.gz ./dist
-    mv ./*.zip ./dist
+build_one() {
+    local os=$1 arch=$2 target="${dist_name}-$1-$2"
+    export GOOS="$os" GOARCH="$arch" CGO_ENABLED=0
+    if [ "$os" = "windows" ]; then
+        # console build + a windowsgui build (no console window) share one zip
+        go build "${go_flags[@]}" -o "./${target}.exe"
+        go build -trimpath -ldflags="-s -w -H windowsgui" -o "./${target}_cli.exe"
+        local payload=("./${target}.exe" "./${target}_cli.exe" config.json)
+        if [ -f "${rule_filename}" ]; then payload+=("${rule_filename}"); fi
+        zip "${target}.zip" "${payload[@]}"
+        rm -f "./${target}.exe" "./${target}_cli.exe"
+    else
+        go build "${go_flags[@]}" -o "./${target}"
+        local payload=("./${target}" config.json)
+        if [ -f "${rule_filename}" ]; then payload+=("${rule_filename}"); fi
+        tar czf "${target}.tar.gz" "${payload[@]}"
+        rm -f "./${target}"
+    fi
+}
+
+main() {
+    prepare_rules
+    for arch in "${!build_targets[@]}"; do
+        for os in ${build_targets[$arch]}; do
+            build_one "$os" "$arch"
+        done
+    done
+    mv ./*.tar.gz ./*.zip ./dist/
+    ls -l ./dist
 }
 
 main
