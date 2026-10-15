@@ -30,10 +30,12 @@ type Outbound struct {
 	secret        string
 	transportType transport.ProtocolType
 	opts          transport.Options
+	handshake     time.Duration
+	dial          time.Duration
 	mp            *metrics.ProtoStats
 }
 
-func NewOutbound(c OutboundConfig) Outbound {
+func NewOutbound(c OutboundConfig, set settings) Outbound {
 	proto := c.Protocol
 	if proto == "" {
 		proto = BTP
@@ -47,6 +49,8 @@ func NewOutbound(c OutboundConfig) Outbound {
 		protocol:      proto,
 		secret:        c.Secret,
 		mp:            metrics.Default.Proto(proto),
+		handshake:     set.handshakeTimeout,
+		dial:          set.dialTimeout,
 		transportType: transport.GetProtocol(c.Transport),
 		opts: transport.Options{
 			Address:   address,
@@ -70,12 +74,12 @@ func (outbound *Outbound) Dial(targetAddr string) (out OutboundConnect, err erro
 	}()
 	// direct relay to the target, no upstream
 	if outbound.protocol == FREEDOM {
-		conn, err := net.DialTimeout("tcp", targetAddr, 15*time.Second)
+		conn, err := net.DialTimeout("tcp", targetAddr, outbound.dial)
 		if err != nil {
 			return nil, err
 		}
 		out = protocols.NewFreeOutbound(conn)
-		out.SetDeadline(time.Now().Add(10 * time.Second))
+		out.SetDeadline(time.Now().Add(outbound.handshake))
 	} else {
 		transportType := outbound.transportType
 		if transportType == "" {
@@ -86,7 +90,7 @@ func (outbound *Outbound) Dial(targetAddr string) (out OutboundConnect, err erro
 		if err != nil {
 			return nil, err
 		}
-		if err = conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		if err = conn.SetDeadline(time.Now().Add(outbound.handshake)); err != nil {
 			_ = conn.Close()
 			return nil, err
 		}

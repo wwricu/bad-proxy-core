@@ -7,6 +7,23 @@ import (
 	"time"
 )
 
+// A BTP inbound with no key configured must never report handshake success,
+// even for a syntactically valid header - it cannot authenticate anyone.
+func TestBtpNoSecretDenies(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	go func() {
+		// well-formed header for any secret would be produced here; the
+		// inbound must refuse before parsing because it has no key at all
+		_, _ = client.Write([]byte("GET / HTTP/1.1\r\n\r\n"))
+	}()
+	in := NewBtpInbound(server, nil)
+	if _, err := in.Connect(); err == nil {
+		t.Fatal("empty-secret inbound accepted a handshake")
+	}
+}
+
 // A plain HTTP GET hitting the BTP port must fail the handshake fast
 // (bounded confusion length) and be answered with the fallback page.
 func TestBtpFallbackPage(t *testing.T) {

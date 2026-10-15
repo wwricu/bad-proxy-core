@@ -5,7 +5,7 @@ import (
 	"sync"
 )
 
-type Queue[T string | *ACAutomaton] struct {
+type Queue[T comparable] struct {
 	data    []T
 	head    int
 	tail    int
@@ -13,7 +13,7 @@ type Queue[T string | *ACAutomaton] struct {
 	lock    *sync.Mutex
 }
 
-func NewQueue[T string | *ACAutomaton](maxSize int, initSize int) (queue *Queue[T]) {
+func NewQueue[T comparable](maxSize int, initSize int) (queue *Queue[T]) {
 	if initSize <= 0 {
 		panic("init size must be positive")
 	}

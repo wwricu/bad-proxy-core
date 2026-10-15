@@ -16,7 +16,9 @@ import (
 	"github.com/wwricu/bad-proxy-core/router"
 )
 
-const relayBufferSize = 64 * 1024
+// the relay buffer size is set once from general.relay_buffer_kib before any
+// stream starts, so the pool New closure needs no synchronisation.
+var relayBufferSize = 64 * 1024
 
 var relayBufPool = sync.Pool{
 	New: func() any {
@@ -26,20 +28,18 @@ var relayBufPool = sync.Pool{
 }
 
 type Proxy struct {
-	inbounds   []Inbound
-	outbounds  map[string]*Outbound
-	routers    []router.Router
-	statsEvery time.Duration
+	inbounds  []Inbound
+	outbounds map[string]*Outbound
+	routers   []router.Router
+	settings  settings
 }
 
 type Config struct {
+	General    GeneralConfig    `json:"general"`
 	Inbounds   []InboundConfig  `json:"inbounds"`
 	Outbounds  []OutboundConfig `json:"outbounds"`
 	Router     []router.Config  `json:"routers"`
 	RouterPath string
-	// Stats is a duration string ("30s", "5m"); the engine logs one metrics
-	// summary line per interval. Empty (default) keeps the process silent.
-	Stats string `json:"stats"`
 }
 
 const (
@@ -52,6 +52,12 @@ const (
 )
 
 func newProxy(config Config) (newProxy Proxy, err error) {
+	settings, err := config.resolveSettings()
+	if err != nil {
+		return Proxy{}, err
+	}
+	relayBufferSize = settings.relayBufferKiB * 1024
+	newProxy.settings = settings
 	newProxy.outbounds = make(map[string]*Outbound, 10)
 	newProxy.routers = make([]router.Router, 0)
 	for _, r := range config.Router {
@@ -66,11 +72,11 @@ func newProxy(config Config) (newProxy Proxy, err error) {
 	}
 
 	for _, in := range config.Inbounds {
-		newProxy.inbounds = append(newProxy.inbounds, NewInbound(in))
+		newProxy.inbounds = append(newProxy.inbounds, NewInbound(in, settings))
 	}
 
 	for _, out := range config.Outbounds {
-		newOutbound := NewOutbound(out)
+		newOutbound := NewOutbound(out, settings)
 		if _, exist := newProxy.outbounds[out.Tag]; exist {
 			return Proxy{}, errors.New("duplicate outbound tag " + out.Tag)
 		}
@@ -80,20 +86,13 @@ func newProxy(config Config) (newProxy Proxy, err error) {
 	if _, exist := newProxy.outbounds[""]; exist != true {
 		return Proxy{}, errors.New("no default outbound, add one with empty \"tag\" (use \"" + FREEDOM + "\" for direct)")
 	}
-	if config.Stats != "" {
-		every, err := time.ParseDuration(config.Stats)
-		if err != nil {
-			return Proxy{}, errors.New("bad stats interval " + config.Stats)
-		}
-		newProxy.statsEvery = every
-	}
 	return
 }
 
 func (proxy Proxy) Start() {
-	if proxy.statsEvery > 0 {
+	if proxy.settings.statsEvery > 0 {
 		go func() {
-			for range time.Tick(proxy.statsEvery) {
+			for range time.Tick(proxy.settings.statsEvery) {
 				log.Println("stats:", metrics.Default.Snapshot())
 			}
 		}()
@@ -165,19 +164,77 @@ func (proxy Proxy) proxy(in InboundConnect, mp *metrics.ProtoStats) {
 	metrics.Default.TunnelsActive.Add(1)
 	defer metrics.Default.TunnelsActive.Add(-1)
 
+	// reclaim a tunnel that goes completely quiet (idle origin keep-alive
+	// otherwise pins both ends forever). No-op when relay_idle_timeout is unset.
+	var idle idleWatch
+	idle.idle = proxy.settings.relayIdle
+	stopIdle := idle.start(in, out)
+	defer stopIdle()
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := relayCopy(in, &metrics.Default.BytesDown, out); err != nil && !errors.Is(err, net.ErrClosed) {
+		if _, err := relayCopy(in, &metrics.Default.BytesDown, out, &idle); err != nil && !idle.benign(err) {
 			metrics.Default.CopyErr.Add(1)
 			log.Printf("copy out->in: %v\n", err)
 		}
 	}()
-	if _, err = relayCopy(out, &metrics.Default.BytesUp, in); err != nil && !errors.Is(err, net.ErrClosed) {
+	if _, err = relayCopy(out, &metrics.Default.BytesUp, in, &idle); err != nil && !idle.benign(err) {
 		metrics.Default.CopyErr.Add(1)
 		log.Printf("copy in->out: %v\n", err)
 	}
 	<-done
+}
+
+// idleWatch records the last moment a relay moved a byte in either direction.
+// When the configured window passes with no activity the watchdog closes both
+// ends, which unblocks the parked io.Copy loops. Cost when enabled is one
+// relaxed atomic store per 64 KiB chunk; disabled (idle window 0) is free.
+type idleWatch struct {
+	idle     time.Duration
+	activity atomic.Int64
+	fired    atomic.Bool
+}
+
+func (w *idleWatch) touch() {
+	if w.idle > 0 {
+		w.activity.Store(time.Now().UnixNano())
+	}
+}
+
+// benign reports whether a copy error is just an expected teardown: a closed
+// conn, or one the idle watchdog deliberately reclaimed.
+func (w *idleWatch) benign(err error) bool {
+	return errors.Is(err, net.ErrClosed) || w.fired.Load()
+}
+
+func (w *idleWatch) start(in, out net.Conn) (stop func()) {
+	if w.idle <= 0 {
+		return func() {}
+	}
+	w.touch()
+	done := make(chan struct{})
+	var once sync.Once
+	stop = func() { once.Do(func() { close(done) }) }
+	go func() {
+		ticker := time.NewTicker(w.idle)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if time.Since(time.Unix(0, w.activity.Load())) >= w.idle {
+					// mark before close so the teardown is not counted as a copy error
+					w.fired.Store(true)
+					_ = in.Close()
+					_ = out.Close()
+					return
+				}
+			}
+		}
+	}()
+	return stop
 }
 
 // relay buffers come from a pool. The thin wrappers hide ReadFrom/WriteTo
@@ -190,19 +247,21 @@ type plainReader struct{ io.Reader }
 
 type countingWriter struct {
 	io.Writer
-	n *atomic.Int64
+	n    *atomic.Int64
+	idle *idleWatch
 }
 
 func (c countingWriter) Write(p []byte) (int, error) {
 	written, err := c.Writer.Write(p)
 	c.n.Add(int64(written))
+	c.idle.touch()
 	return written, err
 }
 
-func relayCopy(dst io.Writer, counter *atomic.Int64, src io.Reader) (int64, error) {
+func relayCopy(dst io.Writer, counter *atomic.Int64, src io.Reader, idle *idleWatch) (int64, error) {
 	buf := relayBufPool.Get().(*[]byte)
 	defer relayBufPool.Put(buf)
-	return io.CopyBuffer(plainWriter{countingWriter{dst, counter}}, plainReader{src}, *buf)
+	return io.CopyBuffer(plainWriter{countingWriter{dst, counter, idle}}, plainReader{src}, *buf)
 }
 
 func (proxy Proxy) route(address string) Outbound {

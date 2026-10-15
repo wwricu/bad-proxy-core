@@ -205,6 +205,11 @@ func NewBtpInbound(conn net.Conn, secrets []string) *BtpInbound {
 }
 
 func (in *BtpInbound) Connect() (targetAddr string, err error) {
+	if len(in.secrets) == 0 {
+		// deny by default: an inbound with no key cannot authenticate anyone,
+		// so it must never report a successful handshake
+		return "", errors.New("btp inbound configured without a secret")
+	}
 	in.probe = in.Peek(8)
 	if LooksLikeHttpRequest(in.probe) {
 		// a web probe can never be a BTP handshake; fail now so Fallback()
@@ -215,12 +220,14 @@ func (in *BtpInbound) Connect() (targetAddr string, err error) {
 	if err != nil {
 		return "", err
 	}
+	lastErr := errors.New("btp auth rejected")
 	for _, secret := range in.secrets {
 		if err = header.validate(secret); err == nil {
 			return net.JoinHostPort(header.host, strconv.Itoa(int(header.port))), nil
 		}
+		lastErr = err
 	}
-	return "", err
+	return "", lastErr
 }
 
 func (in *BtpInbound) Fallback() {

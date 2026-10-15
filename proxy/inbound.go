@@ -41,10 +41,11 @@ type Inbound struct {
 	secrets       []string
 	transportType transport.ProtocolType
 	opts          transport.Options
+	handshake     time.Duration
 	mp            *metrics.ProtoStats // cached at construction: hot path is one atomic
 }
 
-func NewInbound(c InboundConfig) Inbound {
+func NewInbound(c InboundConfig, set settings) Inbound {
 	proto := c.Protocol
 	if proto == "" {
 		proto = BTP
@@ -54,10 +55,11 @@ func NewInbound(c InboundConfig) Inbound {
 		transportType = transport.TCP
 	}
 	return Inbound{
-		protocol: proto,
-		secrets:  c.credentials(),
-		mp:       metrics.Default.Proto(proto),
-		address:  net.JoinHostPort(c.Host, c.Port),
+		protocol:  proto,
+		secrets:   c.credentials(),
+		mp:        metrics.Default.Proto(proto),
+		handshake: set.handshakeTimeout,
+		address:   net.JoinHostPort(c.Host, c.Port),
 		opts: transport.Options{
 			Address:     net.JoinHostPort(c.Host, c.Port),
 			Path:        c.Path,
@@ -86,7 +88,7 @@ func (inbound *Inbound) Accept() (inConn InboundConnect, err error) {
 		return
 	}
 
-	if deadlineErr := conn.SetDeadline(time.Now().Add(10 * time.Second)); deadlineErr != nil {
+	if deadlineErr := conn.SetDeadline(time.Now().Add(inbound.handshake)); deadlineErr != nil {
 		_ = conn.Close()
 		return nil, deadlineErr
 	}

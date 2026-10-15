@@ -4,8 +4,6 @@ import (
 	"log"
 	"regexp"
 	"strings"
-
-	"github.com/wwricu/bad-proxy-core/structure"
 )
 
 type Config struct {
@@ -71,14 +69,17 @@ func (router Router) MatchAny(key string) bool {
 }
 
 func NewRouter(tag string, rules []string, routerPath string) (router *Router, err error) {
-	allRules, err := readAllFromGob(routerPath)
-	if err != nil {
-		log.Println("failed to read rules from file", err)
-		return
+	allRules, readErr := readAllFromGob(routerPath)
+	if readErr != nil {
+		// a missing/broken rules.dat only disables named lists (geosite/geoip);
+		// inline full:/domain:/regexp: rules must still load and route
+		log.Printf("rules file %s unavailable, named rules disabled: %v\n", routerPath, readErr)
+		allRules = map[string]*ParsedList{}
 	}
 
 	fullDomains := make([]string, 0)
 	domains := make([]string, 0)
+	keywords := make([]string, 0)
 	regexStrings := make([]string, 0)
 	for _, rule := range rules {
 		ruleType, ruleStr := RULE, rule
@@ -91,6 +92,8 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router, e
 			fullDomains = append(fullDomains, ruleStr)
 		case DOMAIN: // "domain:string"
 			domains = append(domains, ruleStr)
+		case KEYWORD: // "keyword:string"
+			keywords = append(keywords, ruleStr)
 		case REGEXP: // "regex:string"
 			regexStrings = append(regexStrings, ruleStr)
 		default: // "rule:string" || "string"
@@ -104,6 +107,8 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router, e
 					fullDomains = append(fullDomains, entry.Value)
 				case string(DOMAIN):
 					domains = append(domains, entry.Value)
+				case string(KEYWORD):
+					keywords = append(keywords, entry.Value)
 				case string(REGEXP):
 					regexStrings = append(regexStrings, entry.Value)
 				}
@@ -117,10 +122,11 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router, e
 	log.Printf(
 		"%d rules with %d domains loaded\n",
 		len(allRules),
-		len(fullDomains)+len(regexStrings)+len(domains),
+		len(fullDomains)+len(regexStrings)+len(domains)+len(keywords),
 	)
 	router.matchers = append(router.matchers, NewFullMatcher(fullDomains))
 	router.matchers = append(router.matchers, NewRegexMatcher(regexStrings))
-	router.matchers = append(router.matchers, structure.NewACAutomaton(domains))
+	router.matchers = append(router.matchers, NewDomainMatcher(domains))
+	router.matchers = append(router.matchers, NewKeywordMatcher(keywords))
 	return
 }

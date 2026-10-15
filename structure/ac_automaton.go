@@ -1,5 +1,15 @@
 package structure
 
+// ACAutomaton is an Aho-Corasick multi-pattern substring matcher. It answers
+// MatchAny("does any pattern occur as a substring of the key?") in a single
+// O(len(key)) scan regardless of how many patterns are loaded, which is the
+// right tool for keyword rules (pure substring matching), not domain rules.
+type ACAutomaton struct {
+	success map[uint8]*ACAutomaton
+	failure *ACAutomaton
+	emit    bool
+}
+
 func NewTrie() *ACAutomaton {
 	trie := &ACAutomaton{
 		success: make(map[uint8]*ACAutomaton),
@@ -10,33 +20,19 @@ func NewTrie() *ACAutomaton {
 	return trie
 }
 
-// ACAutomaton /*
-/*
-Actually, the AC automaton is still not totally available,
-There are still obvious issues:
-1. When try to add reverse key word, then find with reversed key,
-it seems incorrect at all.
-2. Secondly, www.bing.com is identified when google rule is set
-The root cause of above issues could be horrible that there must
-be an unknown critical defect in our automaton. A comprehensive,
-thorough and exhaustive test MUST be done to examine the automaton.
-Of course, next time.
-*/
-type ACAutomaton struct {
-	success map[uint8]*ACAutomaton
-	failure *ACAutomaton
-	emit    bool
-}
-
+// Add inserts one pattern. Iteration is byte-wise, not `for i := range s`,
+// because range yields rune indices and would skip continuation bytes of a
+// multi-byte UTF-8 pattern.
 func (root *ACAutomaton) Add(value string) {
 	curr := root
-	for i := range value {
+	for i := 0; i < len(value); i++ {
 		ch := value[i]
-		_, exist := curr.success[ch]
-		if exist == false {
-			curr.success[ch] = NewTrie()
+		child, exist := curr.success[ch]
+		if !exist {
+			child = NewTrie()
+			curr.success[ch] = child
 		}
-		curr = curr.success[ch]
+		curr = child
 	}
 	curr.emit = true
 }
@@ -44,54 +40,74 @@ func (root *ACAutomaton) Add(value string) {
 func NewACAutomaton(patterns []string) *ACAutomaton {
 	ac := NewTrie()
 	for _, pattern := range patterns {
+		if pattern == "" {
+			continue
+		}
 		ac.Add(pattern)
 	}
 	ac.build()
 	return ac
 }
 
+// MatchAny reports whether any pattern appears as a substring of key.
 func (root *ACAutomaton) MatchAny(key string) bool {
 	curr := root
-	for i := range key {
-		success, exist := curr.success[key[i]]
-		for exist == false && curr != root {
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		next, exist := curr.success[c]
+		for !exist && curr != root {
 			curr = curr.failure
-			success, exist = curr.success[key[i]]
+			next, exist = curr.success[c]
 		}
-		if exist == true {
-			curr = success
-		} // else: curr == root, curr = root
-		if curr.emit == true {
+		if exist {
+			curr = next
+		} // else curr == root with no edge on c: stay at root
+		if curr.emit {
 			return true
 		}
 	}
 	return false
 }
 
+// build wires failure links breadth-first and propagates emit along them, so
+// a state reports a hit when any pattern ends at it OR at any suffix state.
 func (root *ACAutomaton) build() {
 	queue := NewQueue[*ACAutomaton](0, 1000)
-	if err := queue.Push(root); err != nil {
-		panic(err)
+	root.failure = root
+	// depth-1 states fall back to root directly
+	for _, child := range root.success {
+		child.failure = root
+		if err := queue.Push(child); err != nil {
+			panic(err)
+		}
 	}
-	for queue.Size() != 0 { // bfs without layer
-		s2 := queue.Pop()
-		for c, s1 := range s2.success {
-			if err := queue.Push(s1); err != nil {
+	for queue.Size() != 0 {
+		state := queue.Pop()
+		for c, child := range state.success {
+			if err := queue.Push(child); err != nil {
 				panic(err)
 			}
-			s3 := s2.failure
-			for {
-				if s3 == root {
-					s1.failure = root
+			// longest proper suffix of `child` that is a trie state
+			fail := state.failure
+			target := root
+			for fail != root {
+				if next, exist := fail.success[c]; exist {
+					target = next
 					break
 				}
-				s4, exist := s3.success[c]
-				if exist == true {
-					s1.failure = s4
-					break
-				}
-				s3 = s3.failure
+				fail = fail.failure
 			}
+			if target == root {
+				// no longer suffix; fall back to root's own edge on c, which
+				// is always shorter than child (child has depth >= 2 here)
+				if next, exist := root.success[c]; exist && next != child {
+					target = next
+				}
+			}
+			child.failure = target
+			// inherit suffix matches: a pattern ending at a shorter suffix
+			// is also present in the text this state represents
+			child.emit = child.emit || child.failure.emit
 		}
 	}
 }

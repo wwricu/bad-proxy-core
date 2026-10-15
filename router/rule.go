@@ -8,14 +8,15 @@ import (
 type RuleType string
 
 const (
-	FULL   RuleType = "full"
-	DOMAIN RuleType = "domain"
-	REGEXP RuleType = "regexp"
-	RULE   RuleType = "rule"
+	FULL    RuleType = "full"
+	DOMAIN  RuleType = "domain"
+	KEYWORD RuleType = "keyword"
+	REGEXP  RuleType = "regexp"
+	RULE    RuleType = "rule"
 )
 
 type Entry struct {
-	Type  string // full, domain, regexp, include
+	Type  string // full, domain, keyword, regexp, include
 	Value string
 }
 

@@ -95,14 +95,26 @@ Listen plainly on loopback and let nginx do TLS — see
 
 ## Configuration reference
 
-Top level: `inbounds` (list), `outbounds` (list), `routers` (list, optional),
-`stats` (string, optional). There must always be an outbound with an empty
-`"tag"` — it is the default.
+Top level: `general` (object, optional), `inbounds` (list), `outbounds`
+(list), `routers` (list, optional). There must always be an outbound with an
+empty `"tag"` — it is the default.
 
-`stats` is a duration string (`"30s"`, `"5m"`): the engine then logs one
-`metrics` summary line per interval. Empty by default - a loaded but quiet
-process emits nothing on that channel.
+### General fields
 
+Process-wide settings that belong to no inbound or outbound; everything here
+is optional and falls back to the shown default.
+
+| field | default | meaning |
+|---|---|---|
+| `stats` | off | duration string (`"30s"`, `"5m"`); logs one metrics line per interval |
+| `handshake_timeout` | `10s` | deadline for connect+protocol handshake, both sides |
+| `dial_timeout` | `15s` | deadline for a `freedom` direct connect to the target |
+| `relay_idle_timeout` | off | reclaim a tunnel that moves zero bytes (either way) for this long; `0`/unset never times out |
+| `relay_buffer_kib` | `64` | per-stream copy buffer, 1-1024 KiB |
+
+```json
+"general": { "stats": "30s", "handshake_timeout": "10s", "relay_buffer_kib": 64 }
+```
 
 ### Inbound fields
 
@@ -142,16 +154,19 @@ origin form before relaying, as RFC 7230 §5.4 requires of a proxy.
 
 ```json
 "routers": [
-  { "tag": "proxy-us", "rules": ["domain:example.org", "regexp:^.*\\.cn$", "geosite:cn"] }
+  { "tag": "proxy-us", "rules": ["domain:example.org", "keyword:bing", "regexp:^.*\\.cn$", "geosite:cn"] }
 ]
 ```
 
-Each rule is either `full:<host>`, `domain:<suffix>`, `regexp:<pattern>`, or
-a bare name resolved from `rules.dat` (`--router-path`, default
-`rules.dat`; a missing file only disables named lists). The first matching
-router selects that tag's outbound; otherwise the default (empty tag) is
-used. `rules.dat` is the gob-encoded domain-list dataset produced by
-`build.sh`.
+Each rule is either `full:<host>`, `domain:<suffix>`, `keyword:<substring>`,
+`regexp:<pattern>`, or a bare name resolved from `rules.dat` (`--router-path`,
+default `rules.dat`; a missing file only disables named lists). The first
+matching router selects that tag's outbound; otherwise the default (empty tag)
+is used. `rules.dat` is the gob-encoded domain-list dataset produced by
+`build.sh`. `domain:<suffix>` matches on label boundaries — `example.org`
+matches `example.org` and `a.example.org` but not `notexample.org`; for plain
+substring matching use `keyword:<substring>` (Aho-Corasick, one scan over all
+keywords), which ignores boundaries — `bing` also matches `www.bing.com`.
 
 ## Protocol notes
 
@@ -334,8 +349,8 @@ the pooled buffer means zero relay allocations per tunnel).
 
 The `metrics` package (stdlib-only) keeps every counter in an
 `atomic.Int64`; call sites cache their `*ProtoStats` pointer at startup, so
-a hot-path event costs one atomic add and nothing else. With `"stats":
-"30s"` the engine logs one line like:
+a hot-path event costs one atomic add and nothing else. With `general.stats`
+set to `"30s"` the engine logs one line like:
 
 ```
 stats: tunnels=12 up=1.1MiB down=48.2MiB copy_err=0 | vless acc=340 hs_fail=2 dial_ok=0 dial_fail=0 | freedom acc=0 hs_fail=0 dial_ok=338 dial_fail=4
