@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"github.com/wwricu/bad-proxy-core/core"
 	"github.com/wwricu/bad-proxy-core/logger"
@@ -46,6 +47,12 @@ func main() {
 		os.Exit(1)
 	}
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig)
+	// Only stop on intentional termination signals. Subscribing to every
+	// signal (signal.Notify with no list) also captures SIGPIPE, and Go
+	// delivers SIGPIPE to a Notify channel instead of turning a write to a
+	// disconnected peer into a plain EPIPE. A proxy hits that constantly
+	// (clients hang up mid-relay), so it would tear down the whole process
+	// here. Restricting the set keeps per-connection breaks per-connection.
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 }
