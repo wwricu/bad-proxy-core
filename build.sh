@@ -45,13 +45,17 @@ build_one() {
         # console build + a windowsgui build (no console window) share one zip
         go build "${go_flags[@]}" -o "./${target}.exe"
         go build -trimpath -ldflags="-s -w -H windowsgui" -o "./${target}_cli.exe"
-        local payload=("./${target}.exe" "./${target}_cli.exe" config.json)
+        local payload=("./${target}.exe" "./${target}_cli.exe")
+        # config.json is gitignored, so it is absent on a CI checkout: bundle it
+        # only when present, exactly like rules.dat.
+        if [ -f config.json ]; then payload+=("config.json"); fi
         if [ -f "${rule_filename}" ]; then payload+=("${rule_filename}"); fi
         zip "${target}.zip" "${payload[@]}"
         rm -f "./${target}.exe" "./${target}_cli.exe"
     else
         go build "${go_flags[@]}" -o "./${target}"
-        local payload=("./${target}" config.json)
+        local payload=("./${target}")
+        if [ -f config.json ]; then payload+=("config.json"); fi
         if [ -f "${rule_filename}" ]; then payload+=("${rule_filename}"); fi
         tar czf "${target}.tar.gz" "${payload[@]}"
         rm -f "./${target}"
