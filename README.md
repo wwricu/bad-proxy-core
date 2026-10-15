@@ -63,7 +63,7 @@ The same binary is used on both ends; only the config differs.
       "protocol": "vless",
       "host": "0.0.0.0",
       "port": "443",
-      "users": ["a29e010d-e2a5-456b-becd-b811e0970d36"],
+      "users": ["01234567-89ab-4cde-8f01-23456789abcd"],
       "transport": "xhttp",
       "path": "/xrt",
       "tls_cert_path": "/etc/bad-proxy/server.crt",
@@ -87,7 +87,7 @@ The same binary is used on both ends; only the config differs.
   "outbounds": [
     {
       "protocol": "vless",
-      "secret": "a29e010d-e2a5-456b-becd-b811e0970d36",
+      "secret": "01234567-89ab-4cde-8f01-23456789abcd",
       "host": "proxy.example.com",
       "port": "443",
       "transport": "xhttp",
@@ -307,7 +307,7 @@ Server config (see `config_server.json`):
       "protocol": "vless",
       "host": "127.0.0.1",
       "port": "8081",
-      "users": ["a29e010d-e2a5-456b-becd-b811e0970d36"],
+      "users": ["01234567-89ab-4cde-8f01-23456789abcd"],
       "transport": "xhttp",
       "path": "/xrt"
     }

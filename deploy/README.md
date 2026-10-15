@@ -1,78 +1,51 @@
-# 部署配置：Xray(v2ray) + BadProxy，VLESS+xhttp 与 BTP
+# 部署：BadProxy 经 Caddy 反代提供服务（vless+xhttp、btp+xhttp）
 
-本目录是 admin.wwr.icu 的实际部署配置副本。`*.json` 已在 `.gitignore` 中，含密钥/UUID，不会被提交。
+本目录是线上部署说明的副本。真正生效的编排文件在独立仓库 `wwricu/deploy`（`docker-compose.yml` + `bad_proxy/config.json`）与 `wwricu/admin-page`（`Caddyfile`）。这里的 `*.json` 已在 `.gitignore` 中，含密钥/UUID，不会被提交；本文档也不再写任何真实凭据。
 
 ## 拓扑一览
 
-| 应用 | 协议/传输 | 服务监听 | 对外入口 | 客户端连接 |
-|------|-----------|----------|----------|------------|
-| Xray (v2ray) | vless / xhttp | `127.0.0.1:8446` (明文，路径 `/vx`) | Caddy `admin.wwr.icu:443` → `handle /vx/*` | `https://admin.wwr.icu/vx` (TLS 由 Caddy 终结) |
-| BadProxy | vless / xhttp | `0.0.0.0:8447` (自带 TLS，路径 `/bx`) | 直连 `admin.wwr.icu:8447` | `admin.wwr.icu:8447` (TLS/ALPN h2) |
-| BadProxy | btp / tls | `0.0.0.0:8448` (自带 TLS) | 直连 `admin.wwr.icu:8448` | `admin.wwr.icu:8448` (TLS/ALPN h2) |
+后台只有 **Caddy 处理 HTTPS/TLS**。BadProxy（BPC）在 compose 网络里跑**明文 HTTP**，由 Caddy 在 443 上按路径反代，套在正常网站后面做隐蔽。
 
-关键点：**为什么 BPC 不走 Caddy**。之前实测 Xray↔Xray 的 xhttp 经 Caddy `/vx` 正常（返回 204），但 BPC 的 xhttp 是“一条无限 duplex POST、响应头先于请求体 flush”的模式，Caddy 会卡住请求体不转发（`dial_ok=0`）。所以 BPC 的 xhttp 与 btp 都用自带的 `tls` 传输直接监听独立端口，绕开 Caddy。Xray 保持走 Caddy。
+| 应用 | 协议/传输 | BPC 监听（明文） | 对外入口 |
+|------|-----------|------------------|----------|
+| BadProxy | vless / xhttp | `bad_proxy:8443`，路径 `/bp` | Caddy `:443` → `handle /bp /bp/*` |
+| BadProxy | btp / xhttp | `bad_proxy:8444`，路径 `/btp` | Caddy `:443` → `handle /btp /btp/*` |
+| v2ray | trojan | （既有服务） | Caddy `:443` → `handle /gp`，保持不动 |
 
-## 服务端（在 admin.wwr.icu）
-
-先准备 BPC 的证书（需要一张对 `admin.wwr.icu` 有效的证书+私钥，可从 Caddy 的证书目录复制，或用 certbot 另签一份；确保 bpc 进程可读）：
+Caddyfile 反代块（关键是 `flush_interval -1`，让响应头立即透传）：
 
 ```
-mkdir -p /home/wwr/bp/tls
-# 放置 /home/wwr/bp/tls/fullchain.pem 和 /home/wwr/bp/tls/privkey.pem
+@bp path /bp /bp/*
+handle @bp { reverse_proxy { to http://bad_proxy:8443  flush_interval -1 } }
+
+@btp path /btp /btp/*
+handle @btp { reverse_proxy { to http://bad_proxy:8444  flush_interval -1 } }
 ```
 
-三个服务进程：
+BPC 侧 `config.json` 用**占位符**，部署时由 deploy 仓库的 workflow 从 GitHub Secrets 替换真实 UUID：
 
-```
-# 1. Xray vless/xhttp，Caddy 反代 /vx/* → 127.0.0.1:8446
-xray run -c xray_vless_xhttp_server.json
-
-# 2. BadProxy vless/xhttp，自带 TLS，直连 :8447
-bad-proxy-core --config bpc_vless_xhttp_server.json
-
-# 3. BadProxy btp/tls，自带 TLS，直连 :8448
-bad-proxy-core --config bpc_btp_server.json
+```json
+{ "protocol": "vless", "port": "8443", "transport": "xhttp", "path": "/bp", "users": ["{TROJAN_UUID}"] }
+{ "protocol": "btp",   "port": "8444", "transport": "xhttp", "path": "/btp", "secret": "{BTP_UUID}" }
 ```
 
-Caddyfile 需要（沿用现有 `/gp` v2ray trojan 不动）：
+## 为什么 BPC 的 xhttp 现在能走反代
 
-```
-admin.wwr.icu {
-    handle /vx/* {
-        reverse_proxy 172.18.0.1:8446 { flush_interval -1 }
-    }
-    # ... 现有 /gp 等保持不变
-}
-```
+早期结论“BPC 必须自带 TLS 直连、不能过 Caddy”已被推翻。两个改动让它能在反代后服务：
 
-防火墙/安全组放行 8447、8448（这两个是 BPC 直连端口，不经 443）。
+1. **服务端**：响应头（`200` + `Flush()`）在读取请求体之前就写出，并把配置的 `path` 按**前缀**匹配。Xray 的 XHTTP 客户端会在会话里追加子路径（如 `/bp/<session-id>`），Caddy 会把整条路径转发过来，前缀匹配才能互通。
+2. **客户端**：`Dial` 不再同步阻塞等待响应头。缓冲型反代（Caddy）会扣住上游已 flush 的 200，直到请求体开始吐字节；若客户端先等 200 再写握手就会死锁。现在握手字节立即通过管道写出，响应在首次 `Read` 时惰性解析，非 200 作为读错误拆链。
 
-## 客户端（本地）
+回归测试 `TestXhttpBufferingProxy`（transport 包）锁定此行为。
 
-```
-# Xray 客户端：本地 socks 1080 / http 1081 → https://admin.wwr.icu/vx
-xray run -c xray_vless_xhttp_client.json
+## 凭据与轮换
 
-# BadProxy 客户端：本地 socks 1082 / http 1083 → admin.wwr.icu:8447
-bad-proxy-core --config bpc_vless_xhttp_client.json
+真实 UUID/HMAC secret 只存在于 GitHub Secrets（`V2RAY_UUID`）与服务器上的 `/data/deploy/.env`，不进仓库。轮换时在 deploy 侧改 secrets，重新跑部署 workflow 即可。
 
-# BadProxy 客户端：本地 socks 1084 / http 1085 → admin.wwr.icu:8448
-bad-proxy-core --config bpc_btp_client.json
-```
-
-三个客户端的本地入站端口已错开，可同时运行。
+> 注：历史提交里曾把示例配置写成过真实 UUID。若该 UUID 仍在线上使用，建议轮换（GitHub 仓库为 public，旧 commit 已对外可见，改写当前文件不会抹去历史）。
 
 ## 互通性说明
 
-- Xray 客户端 ↔ BPC 服务端：**xhttp 不互通**（BPC 的 xhttp 与 Xray 的 XHTTP 线格式不同）。要跨实现，用 `tcp` 传输的 vless（实测 xray.exe → BPC vless server 经 plain TCP 成功）。
-- BPC↔BPC 同协议（vless/xhttp、btp/tls）互通，已在重构后的双进程矩阵中验证。
-
-## 密钥
-
-| 项 | 值 |
-|----|----|
-| Xray VLESS UUID | `0164b316-8c83-46df-a134-7e684b45c0fa` |
-| BPC VLESS UUID | `7c9eafe2-3901-490a-9c7b-9e3e8cb0881f` |
-| BPC BTP secret | `39b64e0ca901db1f94009e5129031128e3a0` |
-
-如需轮换，服务端和对应客户端两边同改。
+- BPC 服务端 ↔ Xray 客户端：经 Caddy 反代时，xhttp 需满足上面的前缀匹配 + 惰性响应条件（已在现网验证 xray→`/bp`、badproxy→`/bp`/`/btp` 均通）。
+- BPC↔BPC 同协议（vless/xhttp、btp/xhttp）互通，双进程矩阵已验证。
+- 跨实现的纯 TCP vless 亦可用（BPC 未实现 Xray 的 XHTTP-over-HTTP/2 全部细节，跨实现优先选简单传输）。
