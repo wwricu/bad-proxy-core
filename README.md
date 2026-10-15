@@ -403,8 +403,12 @@ Notes on behaviour found the hard way:
 
 xhttp follows Xray's *design*, not its byte-level handshake: sessions are
 identified by `X-Session-Id`, there is no `__xhttp_mode` sub-path negotiation,
-and the path is matched as a prefix, so it is **not wire-interoperable with
-xray's xhttp**. VLESS, Trojan and BTP payloads ride it fine between two BPC
+and the path is matched as a prefix, so it is **not interoperable with xray's
+`packet-up`/`auto` modes** (those send a GET session-probe that a BPC server
+answers `403`). It *is* usable from a real Xray client, but only when the client
+pins **`"mode": "stream-one"`**, the one long-lived full-duplex POST that BPC
+implements — verified against Xray v26.3.27 (`XHTTP is dialing … mode stream-one`
+→ 200 relay). VLESS, Trojan and BTP payloads ride it fine between two BPC
 endpoints, and the prefix match is what lets a prefix-stripping reverse proxy
 (`/bp` → `/bp/<session-id>`) reach it.
 

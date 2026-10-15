@@ -84,9 +84,8 @@ func newProxy(config Config) (newProxy Proxy, err error) {
 	return
 }
 
-func (proxy Proxy) Start() {
+func (proxy *Proxy) Start() {
 	for i := range proxy.inbounds {
-		inbound := proxy.inbounds[i]
 		go func(inbound *Inbound) {
 			if err := inbound.Listen(); err != nil {
 				// one broken inbound must not take the whole process down
@@ -95,7 +94,17 @@ func (proxy Proxy) Start() {
 			}
 			logger.Infof("%s listen on %s", inbound.protocol, inbound.address)
 			proxy.serve(inbound)
-		}(&inbound)
+		}(&proxy.inbounds[i]) // pointer into the slice so Stop can see the listener
+	}
+}
+
+// Stop closes every inbound listener, which unblocks the serve loops (Accept
+// returns net.ErrClosed) and stops accepting new tunnels. The Proxy is
+// single-use: Start again on a fresh instance, not this one. In-flight relays
+// keep their own connections and drain naturally.
+func (proxy *Proxy) Stop() {
+	for i := range proxy.inbounds {
+		_ = proxy.inbounds[i].Close()
 	}
 }
 
@@ -275,26 +284,35 @@ func readConfig(path string) (config Config, err error) {
 	return config, nil
 }
 
+// New builds a Proxy from an in-memory Config without touching the filesystem,
+// for embedding (e.g. a desktop GUI) that wants Start/Stop around a live
+// instance. It configures process-wide logging from the resolved settings and
+// validates the config exactly like the CLI Startup path.
+func New(cfg Config) (*Proxy, error) {
+	set, err := cfg.resolveSettings()
+	if err != nil {
+		return nil, err
+	}
+	if err := logger.Configure(set.logFile, set.logLevel, set.consoleLevel); err != nil {
+		logger.Warnf("log file %s unavailable, console only: %v", set.logFile, err)
+	}
+	p, err := newProxy(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 func Startup(configPath string, routerPath string) (err error) {
 	config, err := readConfig(configPath)
 	if err != nil {
 		return
 	}
+	config.RouterPath = routerPath
 
-	// bring up logging from the resolved settings before anything else logs,
-	// so router warnings and inbound lifecycle land in the configured sinks
-	set, err := config.resolveSettings()
+	p, err := New(config)
 	if err != nil {
 		return err
-	}
-	if err := logger.Configure(set.logFile, set.logLevel, set.consoleLevel); err != nil {
-		logger.Warnf("log file %s unavailable, console only: %v", set.logFile, err)
-	}
-
-	config.RouterPath = routerPath
-	p, err := newProxy(config)
-	if err != nil {
-		return
 	}
 	p.Start()
 	return
