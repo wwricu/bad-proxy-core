@@ -1,0 +1,4 @@
+* text=auto eol=lf
+
+# gob routing dataset is binary
+*.dat binary

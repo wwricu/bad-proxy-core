@@ -37,9 +37,9 @@ func (t tlsTransport) Listen() (net.Listener, error) {
 // skip-verify option.
 func clientTlsConfig(address, serverName string) *tls.Config {
 	config := &tls.Config{
-		ServerName:         serverName,
-		MinVersion:         tls.VersionTLS12,
-		NextProtos:         []string{"h2", "http/1.1"},
+		ServerName: serverName,
+		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"h2", "http/1.1"},
 	}
 	if config.ServerName == "" {
 		host, _, err := net.SplitHostPort(address)
