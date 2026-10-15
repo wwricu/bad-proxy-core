@@ -166,7 +166,7 @@ func (t xhttpTransport) Listen() (net.Listener, error) {
 	mux := http.NewServeMux()
 	handler := listener.serve
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == listener.path && r.Method == http.MethodPost {
+		if r.Method == http.MethodPost && xhttpPathMatch(listener.path, r.URL.Path) {
 			handler(w, r)
 			return
 		}
@@ -321,6 +321,15 @@ func pathOrSlash(path string) string {
 		return "/"
 	}
 	return path
+}
+
+// xhttpPathMatch accepts the configured path exactly and any sub-path beneath
+// it. BPC's own client uses the fixed path plus an X-Session-Id header, but
+// Xray's XHTTP clients append a per-session segment (/path/<id>), so the server
+// must treat its path as a prefix to interoperate when fronted by a reverse
+// proxy that forwards the whole path.
+func xhttpPathMatch(want, got string) bool {
+	return got == want || strings.HasPrefix(got, want+"/")
 }
 
 func randomHex(n int) string {
