@@ -21,7 +21,7 @@ const (
 		--help              show this help message
 		--version           show version message
 		--config            specify config file path, default config.json
-		--router-path       specify binary routing rule file path, default rules.dat
+		--router-path       specify binary routing rule file path, default rule.dat
 
 	See README.md for the config reference and an nginx deployment guide.
 	`
@@ -31,7 +31,7 @@ func main() {
 	helpFlag := flag.Bool("help", false, "show help info")
 	versionFlag := flag.Bool("version", false, "show version info")
 	configPath := flag.String("config", "config.json", "config file path")
-	routerPath := flag.String("router-path", "rules.dat", "router data path")
+	routerPath := flag.String("router-path", "rule.dat", "router data path")
 	flag.Parse()
 
 	if *versionFlag == true {
