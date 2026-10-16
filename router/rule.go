@@ -12,6 +12,7 @@ const (
 	DOMAIN  RuleType = "domain"
 	KEYWORD RuleType = "keyword"
 	REGEXP  RuleType = "regexp"
+	INCLUDE RuleType = "include"
 	RULE    RuleType = "rule"
 )
 
@@ -36,6 +37,7 @@ func readAllFromGob(gobName string) (allRules map[string]*ParsedList, err error)
 	if err != nil {
 		return
 	}
+	defer file.Close()
 	err = gob.NewDecoder(file).Decode(&allRules)
 	return
 }

@@ -39,6 +39,34 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router, e
 	domains := make([]string, 0)
 	keywords := make([]string, 0)
 	regexStrings := make([]string, 0)
+
+	// named lists reference each other with include entries (dlc categories
+	// and compound lists), so expand them recursively. seen guards cycles.
+	var appendEntries func(entries []Entry, seen map[string]bool)
+	appendEntries = func(entries []Entry, seen map[string]bool) {
+		for _, entry := range entries {
+			switch RuleType(entry.Type) {
+			case FULL:
+				fullDomains = append(fullDomains, entry.Value)
+			case DOMAIN:
+				domains = append(domains, entry.Value)
+			case KEYWORD:
+				keywords = append(keywords, entry.Value)
+			case REGEXP:
+				regexStrings = append(regexStrings, entry.Value)
+			case INCLUDE:
+				name := strings.ToUpper(entry.Value)
+				if seen[name] {
+					continue
+				}
+				seen[name] = true
+				if sub, exist := allRules[name]; exist && sub != nil {
+					appendEntries(sub.Entry, seen)
+				}
+			}
+		}
+	}
+
 	for _, rule := range rules {
 		ruleType, ruleStr := RULE, rule
 		kv := strings.Split(rule, ":")
@@ -56,21 +84,10 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router, e
 			regexStrings = append(regexStrings, ruleStr)
 		default: // "rule:string" || "string"
 			ruleList, exist := allRules[strings.ToUpper(ruleStr)]
-			if ruleList == nil || exist != true {
+			if !exist || ruleList == nil {
 				break
 			}
-			for _, entry := range ruleList.Entry {
-				switch entry.Type {
-				case string(FULL):
-					fullDomains = append(fullDomains, entry.Value)
-				case string(DOMAIN):
-					domains = append(domains, entry.Value)
-				case string(KEYWORD):
-					keywords = append(keywords, entry.Value)
-				case string(REGEXP):
-					regexStrings = append(regexStrings, entry.Value)
-				}
-			}
+			appendEntries(ruleList.Entry, map[string]bool{strings.ToUpper(ruleStr): true})
 		}
 	}
 	router = &Router{

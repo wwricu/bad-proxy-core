@@ -1,6 +1,11 @@
 package router
 
-import "testing"
+import (
+	"encoding/gob"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // Regression: a missing rules.dat must only disable named lists, not the whole
 // router. Inline domain:/full:/keyword:/regexp: rules still have to load and
@@ -121,5 +126,48 @@ func TestKeywordMatcherEmpty(t *testing.T) {
 	m := NewKeywordMatcher(nil)
 	if m.MatchAny("anything") {
 		t.Fatal("empty keyword matcher should match nothing")
+	}
+}
+
+// Named lists in rules.dat reference other lists via include entries (dlc
+// categories). NewRouter must expand them transitively, and cycle-guard
+// against lists that include each other.
+func TestNamedListIncludeExpansion(t *testing.T) {
+	all := map[string]*ParsedList{
+		"CN": {Name: "CN", Entry: []Entry{
+			{Type: "domain", Value: "direct.cn"},
+			{Type: "include", Value: "tencent"},
+			{Type: "include", Value: "geo-cn"},
+		}},
+		"TENCENT": {Name: "TENCENT", Entry: []Entry{
+			{Type: "domain", Value: "qq.com"},
+			{Type: "include", Value: "cn"}, // cycle back to the parent
+		}},
+		"GEO-CN": {Name: "GEO-CN", Entry: []Entry{
+			{Type: "full", Value: "exact.cn"},
+			{Type: "include", Value: "nonexistent-list"},
+		}},
+	}
+	path := filepath.Join(t.TempDir(), "rules.dat")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gob.NewEncoder(f).Encode(all); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	r, err := NewRouter("direct", []string{"cn"}, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"direct.cn", "www.qq.com", "exact.cn"} {
+		if !r.MatchAny(host) {
+			t.Errorf("include-expanded list did not match %q", host)
+		}
+	}
+	if r.MatchAny("other.com") {
+		t.Error("router matched a host outside the lists")
 	}
 }
