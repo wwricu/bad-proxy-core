@@ -1,3 +1,0 @@
-[submodule "third_party/domain-list-community"]
-	path = third_party/domain-list-community
-	url = https://github.com/v2fly/domain-list-community.git

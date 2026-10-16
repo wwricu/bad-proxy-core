@@ -10,27 +10,30 @@ cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # arch -> space separated list of GOOS values
 declare -A build_targets=(["amd64"]="linux windows darwin" ["arm64"]="linux android darwin")
-rule_filename="rule.dat"
+rule_filename="rules.dat"
 dist_name=${1:?usage: build.sh <dist_name>}
 
 mkdir -p ./dist
 
-build_rules() {
-    # Build rule.dat from the v2fly/domain-list-community submodule.
-    # This is OPTIONAL: a missing file only disables named geosite/geoip
-    # lists (see router.NewRouter), inline rules still work.
+prepare_rules() {
+    # rules.dat is OPTIONAL: a missing file only disables named geosite/geoip
+    # lists (see router.NewRouter), inline rules still work. Never let a flaky
+    # third-party download abort the whole build.
     if [ -f "${rule_filename}" ]; then
         return 0
     fi
-    if [ ! -d "third_party/domain-list-community/data" ]; then
-        echo "WARNING: submodule third_party/domain-list-community not found; skipping rule.dat build" >&2
-        return 0
+    local url="https://github.com/wwricu/domain-list-community/releases/latest/download/${rule_filename}"
+    if command -v wget >/dev/null 2>&1; then
+        wget -O "${rule_filename}" "$url" || rm -f "${rule_filename}"
+    elif command -v curl >/dev/null 2>&1; then
+        curl -fsSL -o "${rule_filename}" "$url" || rm -f "${rule_filename}"
+    else
+        echo "neither wget nor curl available; skipping ${rule_filename}" >&2
     fi
-    echo "Building ${rule_filename} from submodule..."
-    go run ./tools/build-rules/main.go --out="${rule_filename}" || {
-        echo "WARNING: failed to build ${rule_filename}; named routing rules will be disabled at runtime" >&2
+    if [ ! -s "${rule_filename}" ]; then
+        echo "WARNING: ${rule_filename} unavailable; named routing rules will be disabled at runtime" >&2
         rm -f "${rule_filename}"
-    }
+    fi
 }
 
 go_flags=(-trimpath -ldflags "-s -w")
@@ -44,7 +47,7 @@ build_one() {
         go build -trimpath -ldflags="-s -w -H windowsgui" -o "./${target}_cli.exe"
         local payload=("./${target}.exe" "./${target}_cli.exe")
         # config.json is gitignored, so it is absent on a CI checkout: bundle it
-        # only when present, exactly like rule.dat.
+        # only when present, exactly like rules.dat.
         if [ -f config.json ]; then payload+=("config.json"); fi
         if [ -f "${rule_filename}" ]; then payload+=("${rule_filename}"); fi
         zip "${target}.zip" "${payload[@]}"
@@ -60,7 +63,7 @@ build_one() {
 }
 
 main() {
-    build_rules
+    prepare_rules
     for arch in "${!build_targets[@]}"; do
         for os in ${build_targets[$arch]}; do
             build_one "$os" "$arch"

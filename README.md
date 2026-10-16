@@ -263,11 +263,11 @@ Defaults that are not configured live in the `common` package: padding
 ```
 
 Each rule is either `full:<host>`, `domain:<suffix>`, `keyword:<substring>`,
-`regexp:<pattern>`, or a bare name resolved from `rule.dat` (`--router-path`,
-default `rule.dat`; a missing file only disables named lists). The first
+`regexp:<pattern>`, or a bare name resolved from `rules.dat` (`--router-path`,
+default `rules.dat`; a missing file only disables named lists). The first
 matching router selects that tag's outbound; otherwise the default (empty tag)
-is used. `rule.dat` is a gob-encoded domain-list dataset that `build.sh`
-builds from the `v2fly/domain-list-community` git submodule and bundles into the
+is used. `rules.dat` is a gob-encoded domain-list dataset that `build.sh`
+downloads (from wwricu/domain-list-community latest release) and bundles into the
 artifacts; it is optional — without it only the named `geosite:`/`geoip:`
 lists are unavailable. `domain:<suffix>` matches on label boundaries —
 `example.org` matches `example.org` and `a.example.org` but not
