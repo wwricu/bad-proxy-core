@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	versionMsg = "v2.0.0-beta2"
+	versionMsg = "v2.0.0-beta3"
 	helpMsg    = `
 	Bad Proxy Core (BPC) - a small multiplexed proxy, one binary for server and client
 	Run application:
