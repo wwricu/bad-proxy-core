@@ -30,6 +30,9 @@ jobs:
         with:
           tag_name: ${{ steps.readver.outputs.version }}
           files: dist/*
+          # without this the tag is cut from the repository default branch, so
+          # the release points at stale source while the assets hold this build
+          target_commitish: ${{ github.sha }}
       - uses: actions/attest-build-provenance@v1
         with:
           subject-path: 'dist/**/*.tar.gz, dist/**/*.zip'
