@@ -20,6 +20,9 @@ jobs:
         with:
           go-version-file: go.mod
       - id: readver
+        # version.txt is the tag, so it must stay in the v1 series: the module
+        # path has no /v2 suffix, and Go refuses to let a consumer require a
+        # v2.x tag from a module that does not declare one.
         run: echo "version=$(cat version.txt)" >> "$GITHUB_OUTPUT"
       - name: Test
         run: go test ./...
