@@ -36,7 +36,7 @@ func TestXhttpRoundTrip(t *testing.T) {
 	dialed := make(chan net.Conn, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		conn, err := DialXhttp(Options{Address: addr, Path: "/xrt", Padding: "30-50"})
+		conn, err := DialXhttp(Options{Address: addr, Path: "/xrt"})
 		if err != nil {
 			errCh <- err
 			return
@@ -287,5 +287,36 @@ func TestXhttpBufferingProxy(t *testing.T) {
 		}
 	case <-time.After(8 * time.Second):
 		t.Fatal("deadlock: client blocked waiting for a response it never received")
+	}
+}
+
+// Padding is not configurable any more, so this is the only thing standing
+// between the transport and a header that advertises it: the filler has to vary
+// in both length and content, or it is a signature rather than noise.
+func TestRandomPaddingIsNotAMarker(t *testing.T) {
+	// The same length drawn twice. A filler whose content follows from its length
+	// - a repeated alphabet, say - is one string an observer can match on, and
+	// matching on it is exactly what the tunnel is trying to avoid.
+	if a, b := randomPadding("100-100"), randomPadding("100-100"); a == b {
+		t.Fatal("two fillers of the same length came out identical")
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 50; i++ {
+		p := randomPadding("50-200")
+		if len(p) < 50 || len(p) > 200 {
+			t.Fatalf("length %d is outside the default range", len(p))
+		}
+		for _, r := range p {
+			if r < 'a' || r > 'z' {
+				t.Fatalf("filler holds %q, which a proxy could reject as an invalid header", r)
+			}
+		}
+		seen[p] = true
+	}
+	if len(seen) != 50 {
+		t.Fatalf("only %d distinct fillers drawn over 50 requests", len(seen))
+	}
+	if randomPadding("0") != "" || randomPadding("") != "" {
+		t.Fatal("a zero or empty spec must pad nothing")
 	}
 }

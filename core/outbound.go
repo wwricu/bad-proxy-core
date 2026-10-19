@@ -47,7 +47,6 @@ func NewOutbound(c OutboundConfig, set settings) Outbound {
 				Address:   address,
 				Path:      c.Transport.Path,
 				Authority: c.Transport.Authority,
-				Padding:   c.Transport.Padding,
 				UseTLS:    c.Transport.Tls,
 			},
 		),

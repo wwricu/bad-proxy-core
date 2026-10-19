@@ -62,7 +62,7 @@ address itself rather than dialing an upstream.
 |---|---|---|
 | **tcp** (default) | — | raw TCP; cleartext, so pair with an encrypted app protocol or a proxy |
 | **tls** | server `cert`+`key`; client `tls: true`+`authority` | stdlib TLS (≥1.2); server TLS is on when `cert`/`key` are set |
-| **xhttp** | `path` (both); client `tls`, `authority`, `padding`; server `cert`+`key` | duplex stream over one long-lived HTTP POST; runs under nginx or Caddy |
+| **xhttp** | `path` (both); client `tls`, `authority`; server `cert`+`key` | duplex stream over one long-lived HTTP POST; runs under nginx or Caddy |
 
 Every app protocol above (`vless`, `trojan`, `btp`) can use any of these three
 transports. `tls` and `xhttp` combine — xhttp over real TLS.
@@ -123,8 +123,7 @@ go build -o bad-proxy-core .
         "type": "xhttp",
         "path": "/xrt",
         "tls": true,
-        "authority": "proxy.example.com",
-        "padding": "64-256"
+        "authority": "proxy.example.com"
       }
     }
   ]
@@ -238,7 +237,7 @@ the fields it uses; unknown ones are ignored. There is no `insecure` — the
 client always verifies the server certificate.
 
 ```json
-"transport": { "type": "xhttp", "path": "/xrt", "tls": true, "authority": "host", "padding": "64-256" }
+"transport": { "type": "xhttp", "path": "/xrt", "tls": true, "authority": "host" }
 ```
 
 | field | applies to | meaning |
@@ -248,11 +247,11 @@ client always verifies the server certificate.
 | `cert`, `key` | server, tls/xhttp | TLS cert + private key paths; presence is what enables server TLS (a server has no separate `tls` toggle) |
 | `tls` | client, xhttp | encrypt the hop (https scheme + TLS). Plaintext to a TLS port and vice-versa both fail, so the client must state it |
 | `authority` | client, tls/xhttp | SNI / `Host` override; defaults to `host` |
-| `padding` | client, xhttp | `X-Padding` random byte range `"min-max"`; unset uses the default `"50-200"`, an explicit `"0"` disables |
 
-Defaults that are not configured live in the `common` package: padding
-`"50-200"`, relay buffer 64 KiB (max 1024), handshake timeout 10s, dial timeout
-15s.
+Defaults that are not configured live in the `common` package: the xhttp
+`X-Padding` filler (`"50-200"` random letters, always on and not a config field --
+request size is a property of the transport, not of an endpoint), relay buffer
+64 KiB (max 1024), handshake timeout 10s, dial timeout 15s.
 
 ### Routing
 
@@ -376,7 +375,7 @@ implementation.
 client ->  POST <path>      Content-Type: application/octet-stream
                             X-Session-Id: <8 random bytes, hex>
                             X-Sec-Mode: stream-one
-                            X-Padding: <optional "min-max" resolved>
+                            X-Padding: <50-200 random letters>
                             body: upstream stream   (chunked / h2 stream)
 server ->  200 OK, streamed body: downstream stream
 ```

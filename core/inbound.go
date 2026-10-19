@@ -11,7 +11,7 @@ import (
 )
 
 // TransportConfig is the nested "transport" object shared by inbounds and
-// outbounds. It keeps transport concerns (type, path, TLS material, padding)
+// outbounds. It keeps transport concerns (type, path, TLS material)
 // out of the application-protocol fields, so an endpoint reads as
 // protocol/secret/host/port plus a transport block. Each transport picks only
 // the fields it uses; the server derives plaintext-vs-TLS from cert/key being
@@ -20,7 +20,6 @@ type TransportConfig struct {
 	Type      string `json:"type"`      // "tcp", "tls", "xhttp"
 	Path      string `json:"path"`      // xhttp request path
 	Authority string `json:"authority"` // client: SNI / Host override
-	Padding   string `json:"padding"`   // client xhttp: X-Padding range
 	Tls       bool   `json:"tls"`       // client: encrypt the hop
 	Cert      string `json:"cert"`      // server: TLS certificate path
 	Key       string `json:"key"`       // server: TLS private key path

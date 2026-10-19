@@ -28,8 +28,8 @@ func GetProtocol(protocol string) ProtocolType {
 
 // Options is the flat per-endpoint config mirror: it is only ever the *input*
 // to New, never carried into a live connection. New picks out just the fields
-// each transport reads, so tcpTransport, for one, physically cannot see padding
-// or a cert path.
+// each transport reads, so tcpTransport, for one, physically cannot see a cert
+// path.
 type Options struct {
 	Address   string // host:port
 	Path      string // xhttp request path, default "/"
@@ -39,8 +39,6 @@ type Options struct {
 	TlsKeyPath  string
 	// client side
 	UseTLS bool
-	// xhttp padding range, "min-max" or "n"; empty means use the default
-	Padding string
 }
 
 // Transport is one way of moving an undirected byte stream between two
@@ -69,7 +67,6 @@ func New(p ProtocolType, o Options) Transport {
 			address:   o.Address,
 			path:      o.Path,
 			authority: o.Authority,
-			padding:   o.Padding,
 			useTLS:    o.UseTLS,
 			certPath:  o.TlsCertPath,
 			keyPath:   o.TlsKeyPath,

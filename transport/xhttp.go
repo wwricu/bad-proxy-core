@@ -56,14 +56,15 @@ const (
 var errListenerClosed = fmt.Errorf("xhttp listener closed: %w", net.ErrClosed)
 
 // xhttpTransport is a full-duplex byte stream carried over one long-lived HTTP
-// POST. It genuinely reads every endpoint field (path, authority, padding, TLS
-// material), so it carries the whole set - but as named struct fields, not as a
-// grab-bag handed to each call.
+// POST. It genuinely reads every endpoint field (path, authority, TLS material),
+// so it carries the whole set - but as named struct fields, not as a grab-bag
+// handed to each call. Padding is not among them: how much filler a request
+// carries is a property of the transport, not a choice an endpoint makes, so it
+// comes from common.DefaultPadding and no caller can set it.
 type xhttpTransport struct {
 	address   string
 	path      string
 	authority string // SNI / Host, empty means derive from the address host
-	padding   string // X-Padding range; empty means the default
 	useTLS    bool   // client only: https scheme + TLS config
 	certPath  string // server only
 	keyPath   string // server only
@@ -105,7 +106,7 @@ func (t xhttpTransport) Dial() (net.Conn, error) {
 	req.Header.Set(HeaderSessionId, randomHex(8))
 	req.Header.Set(HeaderSecMode, SecModeStream)
 	req.Header.Set("Content-Type", xhttpContentType)
-	if padding := randomPadding(paddingOrDefault(t.padding)); padding != "" {
+	if padding := randomPadding(common.DefaultPadding); padding != "" {
 		req.Header.Set(HeaderPadding, padding)
 	}
 
@@ -410,18 +411,10 @@ func randomHex(n int) string {
 	return hex.EncodeToString(p)
 }
 
-// paddingOrDefault resolves an unset padding spec to the process default so
-// anti-fingerprinting is on without configuration. An explicit "0"/""-ish
-// value still yields empty via randomPadding, letting a caller disable it.
-func paddingOrDefault(spec string) string {
-	if strings.TrimSpace(spec) == "" {
-		return common.DefaultPadding
-	}
-	return spec
-}
-
-// randomPadding produces a header value of random length within [min,max],
-// e.g. "100-1000", to blur the request-size fingerprint.
+// randomPadding produces a header value of random length within the "min-max"
+// spec, to blur the request-size fingerprint. An empty or non-positive spec
+// yields "", which is how the transport stays off if the default ever becomes
+// one that says so.
 func randomPadding(spec string) string {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
@@ -446,8 +439,14 @@ func randomPadding(spec string) string {
 		n = low + int(r.Int64())
 	}
 	p := make([]byte, n)
-	for i := range p {
-		p[i] = byte('a' + i%26)
+	if _, err := rand.Read(p); err != nil {
+		return ""
+	}
+	// Random letters rather than a repeated alphabet. A filler whose content is
+	// the same every time is a signature of the client that any observer can
+	// match, so it would advertise the tunnel instead of blurring it.
+	for i, b := range p {
+		p[i] = 'a' + b%26
 	}
 	return string(p)
 }

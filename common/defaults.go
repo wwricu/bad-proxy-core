@@ -12,9 +12,12 @@ const (
 	// MaxRelayBufferKiB bounds a configured relay buffer.
 	MaxRelayBufferKiB = 1024
 
-	// DefaultPadding is the xhttp X-Padding length range ("min-max") applied
-	// when an endpoint leaves padding unset, so request-size fingerprinting is
-	// blunted without any configuration.
+	// DefaultPadding is the xhttp X-Padding length range ("min-max"). It is the
+	// only padding there is: request size is a property of the transport, not a
+	// choice each endpoint makes, so no config can set it and a user is not asked
+	// to know what it is for. Xray leaves padding off unless it is configured;
+	// ours is on because a tunnel that carries a 30-byte handshake and then a
+	// burst has a size worth hiding, and 50-200 bytes is what it costs.
 	DefaultPadding = "50-200"
 )
 
