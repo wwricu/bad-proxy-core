@@ -12,11 +12,14 @@ The three modes carry Xray's own names:
 The mode never appears on the wire - not for Xray, so not for us either: a
 server configured for one mode only restricts which request shapes it answers.
 
-Two gates decide whether a request is a tunnel at all, and both are Xray's:
-the path must sit under the normalised one (leading *and* trailing slash, so
-"/xrt" is sent as "/xrt/"), and every request must carry ?x_padding= filler.
-An Xray hub rejects a request without it with 400 before looking at anything
-else, which is also what keeps a passing-by probe from getting a tunnel.
+What decides whether a request is a tunnel is the path, normalised the way
+Xray normalises it: a leading *and* a trailing slash, so a configured "/xrt"
+is sent as "/xrt/" and matched as a prefix. The ?x_padding= parameter is not
+a gate - measured against Xray 26.3.27, its server answers an unpadded request
+exactly as it answers a padded one. Padding is only a size bluffer: BPC's
+client keeps drawing filler for it (common.DefaultPadding) because Xray's
+server accepts it, and a server that demanded one here would lock out Xray's
+own default configuration.
 
 seq is decimal and starts at 0. Pieces carry no framing, no acknowledgement and
 no retransmission: the server reorders them by seq and a lost piece stalls the
@@ -174,9 +177,10 @@ func (t xhttpTransport) tunnelURL(sid string, seq int) (string, error) {
 	return url, nil
 }
 
-// newTunnelRequest builds a request with the two things every xhttp request
-// must carry: the padding query, redrawn per request so the request sizes
-// never settle on one value, and the body content type.
+// newTunnelRequest builds a request the way an Xray one looks: the padding
+// query, redrawn per request so the request sizes never settle on one value,
+// and the body content type. Xray's server does not require the parameter, but
+// a request without it is a fixed-size giveaway.
 func (t xhttpTransport) newTunnelRequest(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
@@ -350,18 +354,14 @@ func (t xhttpTransport) Listen() (net.Listener, error) {
 	return listener, nil
 }
 
-// serveHTTP is the single entry for every request the front forwards. Path
-// first, then padding: a request that is not under the tunnel path gets the
-// same 404 any other location on this host would, so the gate cannot be
-// probed for the tunnel's presence.
+// serveHTTP is the single entry for every request the front forwards. The path
+// is the whole gate: a request that is not under the tunnel path gets the same
+// 404 any other location on this host would, so it cannot be probed for the
+// tunnel's presence.
 func (listener *XhttpListener) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	segs, ok := xhttpSegments(listener.path, r.URL.Path)
 	if !ok || !xhttpAnswers(listener.mode, r.Method, len(segs)) {
 		refuse(w, http.StatusNotFound)
-		return
-	}
-	if r.URL.Query().Get(PaddingParam) == "" {
-		refuse(w, http.StatusBadRequest)
 		return
 	}
 	switch {

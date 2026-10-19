@@ -14,9 +14,10 @@ const (
 
 	// DefaultPadding is the xhttp x_padding length range ("min-max"). It is
 	// Xray's own default, and it is the only padding there is: the wire format
-	// is fixed by the transport and by what an Xray server demands, not by a
-	// choice each endpoint makes, so no config sets it and a user is not asked
-	// to know what it is for.
+	// is fixed by the transport, not by a choice each endpoint makes, so no
+	// config sets it and a user is not asked to know what it is for. Xray's
+	// server does not require the parameter, so nothing here demands it either;
+	// it is drawn on every request only so request sizes keep moving.
 	DefaultPadding = "100-1000"
 )
 

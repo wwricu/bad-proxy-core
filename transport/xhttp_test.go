@@ -299,54 +299,71 @@ func TestXhttpPacketReorder(t *testing.T) {
 }
 
 // A Content-Length body probe exercises the server half without the
-// streaming-body client path.
+// streaming-body client path. All three shapes Xray's client produces are
+// probed: the filler it draws when configured, the empty parameter, and the
+// bare path with no parameter at all - the one Xray sends by default, which
+// this server used to refuse with 400.
 func TestXhttpServerRawProbe(t *testing.T) {
-	addr := freeAddr(t)
-	listener, err := ListenXhttp(Options{Address: addr, Path: "/xrt"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
+	for _, c := range []struct {
+		name  string
+		query string
+	}{
+		{"filler", "?x_padding=" + strings.Repeat("X", 120)},
+		{"empty", "?x_padding="},
+		{"absent", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			addr := freeAddr(t)
+			listener, err := ListenXhttp(Options{Address: addr, Path: "/xrt"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
 
-	errs := make(chan error, 1)
-	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			errs <- fmt.Errorf("accept: %w", err)
-			return
-		}
-		buf := make([]byte, 4)
-		if _, err := io.ReadFull(conn, buf); err != nil {
-			errs <- fmt.Errorf("relay read: %w", err)
-			return
-		}
-		if _, err := conn.Write(buf); err != nil {
-			errs <- fmt.Errorf("relay write: %w", err)
-			return
-		}
-		_ = conn.Close()
-		errs <- nil
-	}()
+			errs := make(chan error, 1)
+			go func() {
+				conn, err := listener.Accept()
+				if err != nil {
+					errs <- fmt.Errorf("accept: %w", err)
+					return
+				}
+				buf := make([]byte, 4)
+				if _, err := io.ReadFull(conn, buf); err != nil {
+					errs <- fmt.Errorf("relay read: %w", err)
+					return
+				}
+				if _, err := conn.Write(buf); err != nil {
+					errs <- fmt.Errorf("relay write: %w", err)
+					return
+				}
+				_ = conn.Close()
+				errs <- nil
+			}()
 
-	status, body := rawXhttpPost(t, addr, "/xrt/")
-	if status != http.StatusOK {
-		t.Fatalf("status %d, want 200", status)
-	}
-	if body != "ping" {
-		t.Fatalf("got %q", body)
-	}
-	select {
-	case e := <-errs:
-		if e != nil {
-			t.Errorf("relay: %v", e)
-		}
-	case <-time.After(5 * time.Second):
-		t.Error("relay never finished")
+			status, body := rawXhttpPost(t, addr, "/xrt/", c.query)
+			if status != http.StatusOK {
+				t.Fatalf("status %d, want 200", status)
+			}
+			if body != "ping" {
+				t.Fatalf("got %q", body)
+			}
+			select {
+			case e := <-errs:
+				if e != nil {
+					t.Errorf("relay: %v", e)
+				}
+			case <-time.After(5 * time.Second):
+				t.Error("relay never finished")
+			}
+		})
 	}
 }
 
-// The two gates an Xray hub puts up have to be up here too, or a client written
-// for Xray learns something about this server it should not be able to learn.
+// The path is the gate an Xray hub puts up: off it, a request gets the same
+// answer any other location on this host would, so a probe cannot learn that a
+// tunnel is listening here. Padding is not a gate - Xray 26.3.27 answers an
+// unpadded request on the tunnel path exactly as it answers a padded one, which
+// is what TestXhttpServerRawProbe pins down.
 func TestXhttpGates(t *testing.T) {
 	addr := freeAddr(t)
 	listener, err := ListenXhttp(Options{Address: addr, Path: "/xrt"})
@@ -372,11 +389,7 @@ func TestXhttpGates(t *testing.T) {
 		{"/nope", http.StatusNotFound},
 		{"/xrtx", http.StatusNotFound},
 		{"/xrt/deep/er/than/that", http.StatusNotFound},
-		// On it, but with nothing in the filler parameter: Xray answers 400.
-		{"/xrt/", http.StatusBadRequest},
-		{"/xrt?x_padding=", http.StatusBadRequest},
-		{"/xrt/cccccccccccccccc", http.StatusBadRequest},
-		// A piece number that is not a number.
+		// A piece number that is not a number is not a piece.
 		{"/xrt/cccccccccccccccc/one?x_padding=XXXXXXXXXXXXXXXXXXXXXXXX", http.StatusBadRequest},
 	}
 	for _, c := range cases {
@@ -455,10 +468,11 @@ func TestXhttpModeResolution(t *testing.T) {
 	}
 }
 
-// rawXhttpPost sends one hand-written request, padding included, and reports
-// what came back. The duplex answer is read to the end of the body, which is
-// where the echoing side closes.
-func rawXhttpPost(t *testing.T, addr, path string) (int, string) {
+// rawXhttpPost sends one hand-written request with the query as given - which
+// is the point, because the parameter's presence is what used to be tested. The
+// duplex answer is read to the end of the body, which is where the echoing side
+// closes.
+func rawXhttpPost(t *testing.T, addr, path, query string) (int, string) {
 	t.Helper()
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -467,7 +481,7 @@ func rawXhttpPost(t *testing.T, addr, path string) (int, string) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	_, err = io.WriteString(conn, strings.Join([]string{
-		"POST " + path + "?x_padding=" + strings.Repeat("X", 120) + " HTTP/1.1",
+		"POST " + path + query + " HTTP/1.1",
 		"Host: test",
 		"Content-Type: application/octet-stream",
 		"Content-Length: 4",

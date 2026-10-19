@@ -12,8 +12,9 @@ sits behind a proxy.
 * Application-layer protocols: **VLESS**, **Trojan**, **BTP v2** (this
   project's own protocol), plus plain **SOCKS5** / **HTTP proxy** inbounds and
   a direct **freedom** outbound.
-* Transports: **raw TCP**, **TLS**, and **xhttp** (long-lived duplex HTTP
-  POST, in the spirit of Xray's XHTTP stream mode).
+* Transports: **raw TCP**, **TLS**, and **xhttp** (Xray's XHTTP, all four of
+  its modes: `stream-one`, `stream-up`, `packet-up` and `auto`, interoperable
+  with Xray in both directions).
 * Rule-based routing (full / domain / keyword / regexp lists, optionally the
   `rules.dat` GeoIP-style dataset) selecting different outbounds per target.
 
@@ -62,7 +63,7 @@ address itself rather than dialing an upstream.
 |---|---|---|
 | **tcp** (default) | — | raw TCP; cleartext, so pair with an encrypted app protocol or a proxy |
 | **tls** | server `cert`+`key`; client `tls: true`+`authority` | stdlib TLS (≥1.2); server TLS is on when `cert`/`key` are set |
-| **xhttp** | `path` (both); client `tls`, `authority`; server `cert`+`key` | duplex stream over one long-lived HTTP POST; runs under nginx or Caddy |
+| **xhttp** | `path`, `mode` (both); client `tls`, `authority`; server `cert`+`key` | Xray's XHTTP: one duplex POST, or split up/down flows, or packetised uploads; runs under nginx or Caddy |
 
 Every app protocol above (`vless`, `trojan`, `btp`) can use any of these three
 transports. `tls` and `xhttp` combine — xhttp over real TLS.
@@ -243,14 +244,16 @@ client always verifies the server certificate.
 | field | applies to | meaning |
 |---|---|---|
 | `type` | all | `tcp` (default), `tls`, `xhttp` |
-| `path` | xhttp | request path; the server matches it as a **prefix** (others get 403), the client sends it |
+| `path` | xhttp | request path; the server matches it as a **prefix** (others get 404), the client sends it. Normalised to a leading *and* a trailing slash, so `/xrt` is sent and matched as `/xrt/` — what Xray does |
+| `mode` | xhttp | `stream-one` (one duplex POST), `stream-up` (POST up, GET down), `packet-up` (GET down, numbered POSTs up), or `auto`. Never sent on the wire: a **client** dials the named shape, a **server** only restricts which shapes it answers. Client unset → `stream-one`; server unset → answers everything |
 | `cert`, `key` | server, tls/xhttp | TLS cert + private key paths; presence is what enables server TLS (a server has no separate `tls` toggle) |
 | `tls` | client, xhttp | encrypt the hop (https scheme + TLS). Plaintext to a TLS port and vice-versa both fail, so the client must state it |
 | `authority` | client, tls/xhttp | SNI / `Host` override; defaults to `host` |
 
 Defaults that are not configured live in the `common` package: the xhttp
-`X-Padding` filler (`"50-200"` random letters, always on and not a config field --
-request size is a property of the transport, not of an endpoint), relay buffer
+`?x_padding=` filler (`"100-1000"` random letters, Xray's own default, always on
+and not a config field -- request size is a property of the transport, not of an
+endpoint), relay buffer
 64 KiB (max 1024), handshake timeout 10s, dial timeout 15s.
 
 ### Routing
@@ -369,27 +372,43 @@ Client outbound: `"protocol": "btp"` with `secret` = the HMAC key, and any
 transport. See [protocol source](protocols/btp.go) for the reference
 implementation.
 
-### xhttp (`xhttp`) — duplex stream over one HTTP POST
+### xhttp (`xhttp`) — Xray's XHTTP, all four modes
 
 ```
-client ->  POST <path>      Content-Type: application/octet-stream
-                            X-Session-Id: <8 random bytes, hex>
-                            X-Sec-Mode: stream-one
-                            X-Padding: <50-200 random letters>
-                            body: upstream stream   (chunked / h2 stream)
-server ->  200 OK, streamed body: downstream stream
+stream-one  POST <path>          duplex: request body up, streamed 200 down
+stream-up   GET  <path>/<sid>    down,  POST <path>/<sid>            up
+packet-up   GET  <path>/<sid>    down,  POST <path>/<sid>/<seq>      up in pieces
+auto        resolves to packet-up on the client, like Xray's
 ```
 
-One long-lived request is one tunnel: the request body carries client→server
+`<path>` is normalised to a leading *and* trailing slash (`/xrt` → `/xrt/`) and
+matched as a prefix, which is what lets a prefix-stripping reverse proxy
+(`/bp` → `/bp/<session-id>`) reach it. Every request carries a `?x_padding=`
+parameter with random filler; it is a size bluffer, not a gate — measured against
+Xray 26.3.27, its server answers an unpadded request on the tunnel path exactly
+as it answers a padded one, so a BPC server demands nothing of it either. `seq`
+is decimal and starts at 0; pieces carry no framing, acknowledgement or
+retransmission — the server reorders by `seq` and a lost piece stalls the stream,
+in Xray as in here.
+
+One stream-one request is one tunnel: the request body carries client→server
 bytes, the response body server→client. Over plain TCP (the loopback hop behind
 a proxy) it is HTTP/1.1 chunked duplex; over TLS the stdlib negotiates HTTP/2 by
 ALPN and every tunnel is one h2 stream on a shared connection. The server
-answers 403 to any other path/method, so it coexists with static content.
+answers 404 to any other path, so it coexists with static content.
 
 Notes on behaviour found the hard way:
 
 * `WriteHeader` normally drains and closes the request body, so the handler
   must call `ResponseController.EnableFullDuplex()` before relaying.
+* A refusal has to say `Connection: close`: net/http drains whatever a handler
+  left unread *before* it flushes the response, so refusing an upload whose body
+  is still streaming withheld the 404/413 from the client that had earned it.
+* A split-flow tunnel is two requests and nothing orders them. The upload can
+  arrive, be relayed and close before the download is even handled, so the
+  session id stays reserved until a download has actually claimed it — otherwise
+  the late GET gets a brand-new empty session and the client waits forever for
+  bytes the old session already had.
 * `http.Protocols` needs `SetHTTP1(true)` **and** `SetUnencryptedHTTP2(true)`
   or plain-HTTP h2 probes RST existing HTTP/1.1 connections.
 * The conn's `SetDeadline` is wired to the response controller's
@@ -400,16 +419,13 @@ Notes on behaviour found the hard way:
   buffers response headers until the first byte does not deadlock the
   handshake.
 
-xhttp follows Xray's *design*, not its byte-level handshake: sessions are
-identified by `X-Session-Id`, there is no `__xhttp_mode` sub-path negotiation,
-and the path is matched as a prefix, so it is **not interoperable with xray's
-`packet-up`/`auto` modes** (those send a GET session-probe that a BPC server
-answers `403`). It *is* usable from a real Xray client, but only when the client
-pins **`"mode": "stream-one"`**, the one long-lived full-duplex POST that BPC
-implements — verified against Xray v26.3.27 (`XHTTP is dialing … mode stream-one`
-→ 200 relay). VLESS, Trojan and BTP payloads ride it fine between two BPC
-endpoints, and the prefix match is what lets a prefix-stripping reverse proxy
-(`/bp` → `/bp/<session-id>`) reach it.
+Interop with Xray is verified, not assumed: 25 cases against Xray 26.3.27 —
+BPC client → Xray server, Xray client → BPC server, BPC ↔ BPC, and Xray ↔ Xray as
+the control that proves the harness — covering `stream-one`, `stream-up`,
+`packet-up` and `auto`, each pinned and each against an `auto` hub, every case
+carrying a 300 KiB download and a 300 KiB upload through the tunnel and comparing
+both byte for byte. VLESS, Trojan and BTP payloads ride it between two BPC
+endpoints.
 
 ## Deploying behind nginx
 
@@ -465,8 +481,8 @@ server {
 Client config: `transport: { type: xhttp, tls: true, path: /xrt, authority:
 proxy.example.com }`, `host: proxy.example.com`, `port: "443"`. The
 client↔nginx hop is real TLS (h2 or h1 by ALPN); nginx↔BPC is plaintext
-loopback, so `X-Sec-Mode`/`X-Session-Id` headers terminate cleanly and
-VLESS/Trojan/BTP handshakes run over the tunnel body.
+loopback, so the session id travels in the path (`/xrt/<sid>`) and terminates
+cleanly there, while the VLESS/Trojan/BTP handshake runs over the tunnel body.
 
 Checklist:
 
@@ -628,14 +644,14 @@ Verified matrix (payload checked end to end):
 Wrong-credential handshakes are rejected (`password mismatch`, unknown UUID,
 bad HMAC) and never relay origin bytes. A plain HTTP GET against the BTP port
 is answered immediately with the innocuous fallback page (the probe is detected
-before any header parsing), and the xhttp inbounds reply `403` to every path
+before any header parsing), and the xhttp inbounds reply `404` to every path
 other than their own.
 
 ### Interoperability with real Xray
 
-BPC's VLESS and Trojan handshakes are Xray-shaped, so the two interoperate over
-the `tcp` and `tls` transports (xhttp is BPC-only). Tested against Xray
-v26.3.27 on loopback (origin on `127.0.0.1:18000`):
+BPC's VLESS and Trojan handshakes are Xray-shaped, and its xhttp transport is
+Xray-shaped too, so the two interoperate over `tcp`, `tls` and `xhttp`. Tested
+against Xray v26.3.27 on loopback (origin on `127.0.0.1:18000`):
 
 | direction | app protocol | transport | result |
 |---|---|---|---|
@@ -643,6 +659,14 @@ v26.3.27 on loopback (origin on `127.0.0.1:18000`):
 | Xray client → BPC server | vless | tcp | ✅ payload-checked |
 | BPC client → Xray server | vless | tls | ✅ payload-checked |
 | Xray client → BPC server | vless | tls | ✅ payload-checked |
+| BPC client → Xray server | vless | xhttp, all four modes | ✅ 300 KiB each way, byte-exact |
+| Xray client → BPC server | vless | xhttp, all four modes | ✅ 300 KiB each way, byte-exact |
+
+The xhttp row is a 25-case matrix: four modes pinned against themselves and
+against an `auto` hub, in both directions, plus BPC ↔ BPC, plus Xray ↔ Xray as
+the control that shows the harness itself works. Each case downloads 300 KiB and
+uploads 300 KiB through the tunnel and compares both byte for byte — a mode that
+only survives a 4-byte handshake is not a mode.
 
 Below are concrete configs for both directions and both protocols. The UUID /
 password values must match across the two ends.
