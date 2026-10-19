@@ -666,7 +666,9 @@ The xhttp row is a 25-case matrix: four modes pinned against themselves and
 against an `auto` hub, in both directions, plus BPC ↔ BPC, plus Xray ↔ Xray as
 the control that shows the harness itself works. Each case downloads 300 KiB and
 uploads 300 KiB through the tunnel and compares both byte for byte — a mode that
-only survives a 4-byte handshake is not a mode.
+only survives a 4-byte handshake is not a mode. It lives in
+[`interop/`](interop/README.md) and is run by hand (`XRAY=/path/to/xray.exe
+./interop/run.sh`), not in CI; run it whenever the xhttp transport changes.
 
 Below are concrete configs for both directions and both protocols. The UUID /
 password values must match across the two ends.

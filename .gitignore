@@ -14,3 +14,7 @@ build
 *.toml
 .xray/
 conf/config.json
+
+# interop matrix scratch: built binaries, generated configs, the Xray binary
+interop/work/
+interop/xray/
