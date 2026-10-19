@@ -17,8 +17,9 @@ type GeneralConfig struct {
 	// DialTimeout bounds a direct (freedom) connect to the target ("15s").
 	DialTimeout string `json:"dial_timeout"`
 	// RelayIdleTimeout reclaims a tunnel that has moved zero bytes in either
-	// direction for this long ("5m"). Empty/0 (default) never times out, so a
-	// legitimately idle long-lived tunnel is never cut.
+	// direction for this long ("5m"). Unset (default) applies
+	// common.DefaultRelayIdleTimeout; an explicit "0s" disables reclamation
+	// entirely, so a legitimately idle long-lived tunnel is never cut.
 	RelayIdleTimeout string `json:"relay_idle_timeout"`
 	// RelayBufferKiB is the per-stream relay copy buffer size, 1-1024.
 	RelayBufferKiB int `json:"relay_buffer_kib"`
@@ -36,6 +37,7 @@ type GeneralConfig struct {
 const (
 	defaultHandshakeTimeout = common.DefaultHandshakeTimeout
 	defaultDialTimeout      = common.DefaultDialTimeout
+	defaultRelayIdle        = common.DefaultRelayIdleTimeout
 	defaultRelayBufferKiB   = common.DefaultRelayBufferKiB
 	maxRelayBufferKiB       = common.MaxRelayBufferKiB
 )
@@ -55,6 +57,7 @@ func (c Config) resolveSettings() (settings, error) {
 	s := settings{
 		handshakeTimeout: defaultHandshakeTimeout,
 		dialTimeout:      defaultDialTimeout,
+		relayIdle:        defaultRelayIdle,
 		relayBufferKiB:   defaultRelayBufferKiB,
 		logLevel:         logger.Debug,
 		consoleLevel:     logger.Info,
@@ -79,7 +82,7 @@ func (c Config) resolveSettings() (settings, error) {
 			return settings{}, errors.New("bad general.relay_idle_timeout " + c.General.RelayIdleTimeout)
 		}
 		if d < 0 {
-			return settings{}, errors.New("general.relay_idle_timeout must not be negative")
+			return settings{}, errors.New("general.relay_idle_timeout must not be negative; use \"0s\" to disable reclamation")
 		}
 		s.relayIdle = d
 	}

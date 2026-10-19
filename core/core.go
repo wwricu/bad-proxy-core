@@ -3,28 +3,14 @@ package core
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"net"
 	"os"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/wwricu/bad-proxy-core/logger"
 	"github.com/wwricu/bad-proxy-core/router"
 )
-
-// the relay buffer size is set once from general.relay_buffer_kib before any
-// stream starts, so the pool New closure needs no synchronisation.
-var relayBufferSize = 64 * 1024
-
-var relayBufPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, relayBufferSize)
-		return &buf
-	},
-}
 
 type Proxy struct {
 	inbounds  []Inbound
@@ -158,100 +144,12 @@ func (proxy Proxy) proxy(in InboundConnect) {
 		_ = out.Close()
 	}()
 
-	// reclaim a tunnel that goes completely quiet (idle origin keep-alive
-	// otherwise pins both ends forever). No-op when relay_idle_timeout is unset.
-	var idle idleWatch
-	idle.idle = proxy.settings.relayIdle
-	stopIdle := idle.start(in, out)
-	defer stopIdle()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if _, err := relayCopy(in, out, &idle); err != nil && !idle.benign(err) {
-			logger.Warnf("copy out->in: %v", err)
-		}
-	}()
-	if _, err = relayCopy(out, in, &idle); err != nil && !idle.benign(err) {
-		logger.Warnf("copy in->out: %v", err)
-	}
-	<-done
-}
-
-// idleWatch records the last moment a relay moved a byte in either direction.
-// When the configured window passes with no activity the watchdog closes both
-// ends, which unblocks the parked io.Copy loops. Cost when enabled is one
-// relaxed atomic store per 64 KiB chunk; disabled (idle window 0) is free.
-type idleWatch struct {
-	idle     time.Duration
-	activity atomic.Int64
-	fired    atomic.Bool
-}
-
-func (w *idleWatch) touch() {
-	if w.idle > 0 {
-		w.activity.Store(time.Now().UnixNano())
-	}
-}
-
-// benign reports whether a copy error is just an expected teardown: a closed
-// conn, or one the idle watchdog deliberately reclaimed.
-func (w *idleWatch) benign(err error) bool {
-	return errors.Is(err, net.ErrClosed) || w.fired.Load()
-}
-
-func (w *idleWatch) start(in, out net.Conn) (stop func()) {
-	if w.idle <= 0 {
-		return func() {}
-	}
-	w.touch()
-	done := make(chan struct{})
-	var once sync.Once
-	stop = func() { once.Do(func() { close(done) }) }
-	go func() {
-		ticker := time.NewTicker(w.idle)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				if time.Since(time.Unix(0, w.activity.Load())) >= w.idle {
-					// mark before close so the teardown is not counted as a copy error
-					w.fired.Store(true)
-					_ = in.Close()
-					_ = out.Close()
-					return
-				}
-			}
-		}
-	}()
-	return stop
-}
-
-// relay buffers come from a pool. The thin wrappers hide ReadFrom/WriteTo
-// so io.CopyBuffer runs its plain chunked loop: on Windows the
-// TCPConn->TCPConn TransmitFile "splice" measured ~80 MB/s while a 64 KiB
-// buffered loop passes ~400 MB/s over the same loopback path. The idle writer
-// only records activity so the watchdog can reclaim a silent tunnel.
-type plainWriter struct{ io.Writer }
-type plainReader struct{ io.Reader }
-
-type idleWriter struct {
-	io.Writer
-	idle *idleWatch
-}
-
-func (w idleWriter) Write(p []byte) (int, error) {
-	written, err := w.Writer.Write(p)
-	w.idle.touch()
-	return written, err
-}
-
-func relayCopy(dst io.Writer, src io.Reader, idle *idleWatch) (int64, error) {
-	buf := relayBufPool.Get().(*[]byte)
-	defer relayBufPool.Put(buf)
-	return io.CopyBuffer(plainWriter{idleWriter{dst, idle}}, plainReader{src}, *buf)
+	// The pair is modelled once and owns everything per-connection: both byte
+	// pumps, the shared activity stamp, the reclaim timer. A quiet tunnel - an
+	// origin keep-alive, a vanished peer - would otherwise pin both ends and two
+	// buffers for hours. Reclaim is on by default; relay_idle_timeout "0s"
+	// turns it off. See tunnel.go.
+	newTunnel(in, out, proxy.settings.relayIdle).run()
 }
 
 func (proxy Proxy) route(address string) Outbound {

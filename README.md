@@ -185,8 +185,8 @@ is optional and falls back to the shown default.
 |---|---|---|
 | `handshake_timeout` | `10s` | deadline for connect+protocol handshake, both sides |
 | `dial_timeout` | `15s` | deadline for a `freedom` direct connect to the target |
-| `relay_idle_timeout` | off | reclaim a tunnel that moves zero bytes (either way) for this long; `0`/unset never times out |
-| `relay_buffer_kib` | `64` | per-stream copy buffer, 1-1024 KiB |
+| `relay_idle_timeout` | `10m` | reclaim a tunnel that moves zero bytes (either way) for this long; set `"0s"` to never time out |
+| `relay_buffer_kib` | `32` | per-stream copy buffer, 1-1024 KiB |
 | `log_file` | (console only) | path the detailed log is appended to; empty means no file |
 | `log_level` | `debug` | minimum level written to `log_file`: `debug`/`info`/`warn`/`error`/`off` |
 | `console_level` | `info` | minimum level echoed to stdout; raise to `warn`/`error` to keep only critical lines |
@@ -194,7 +194,7 @@ is optional and falls back to the shown default.
 ```json
 "general": {
   "handshake_timeout": "10s",
-  "relay_buffer_kib": 64,
+  "relay_buffer_kib": 32,
   "log_file": "/var/log/bad-proxy.log",
   "log_level": "debug",
   "console_level": "info"
@@ -254,7 +254,8 @@ Defaults that are not configured live in the `common` package: the xhttp
 `?x_padding=` filler (`"100-1000"` random letters, Xray's own default, always on
 and not a config field -- request size is a property of the transport, not of an
 endpoint), relay buffer
-64 KiB (max 1024), handshake timeout 10s, dial timeout 15s.
+32 KiB (max 1024), handshake timeout 10s, dial timeout 15s, relay idle reclaim
+10m.
 
 ### Routing
 
@@ -566,7 +567,8 @@ main.go             CLI entry: flags, startup, signal handling (one binary,
                     role from config; only SIGINT/SIGTERM stop it)
 core/               engine: settings.go (GeneralConfig + defaults), inbound.go
                     and outbound.go (config structs, TransportConfig, handshake
-                    wiring), core.go (relay loop, routing, idle watchdog)
+                    wiring), core.go (routing, tunnel setup), tunnel.go (one
+                    relay pair: the byte pump and the idle reclaim)
 protocols/          one file per handshake, inbound + outbound together:
                     protocol.go (NewInbound/NewOutbound + protocol names),
                     vless.go trojan.go btp.go socks.go http.go (client-facing)
@@ -586,11 +588,30 @@ config*.json        runnable examples: nginx/Caddy server, client, the
 
 Relay lifecycle: accept → handshake deadline (`handshake_timeout`) → protocol
 `Connect()` (success: target address; failure: `Fallback()` answers probes) →
-deadline cleared → two copy directions pumping through pooled `relay_buffer_kib`
-buffers. The copy deliberately hides the `ReadFrom`/`WriteTo` splice interfaces:
-on Windows the `TCPConn→TCPConn` TransmitFile path measured ~80 MB/s on loopback
-where the plain buffered loop passes ~400 MB/s (and the pooled buffer means zero
-relay allocations per tunnel).
+deadline cleared → `tunnel` models the pair and runs both copy directions through
+pooled `relay_buffer_kib` buffers. The pump is an explicit read/write loop
+because `io.Copy` hands the whole stream to `src.WriteTo`, then `dst.ReadFrom`,
+before it looks at any buffer - and `*net.TCPConn` offers both, so a TCP-to-TCP
+tunnel would be spliced (TransmitFile on Windows, `splice(2)` on Linux) with the
+config buffer unused. Delegating is also a correctness trap: a kernel splice has
+no per-chunk callback, so the activity stamp would freeze and `tunnel.arm` would
+reclaim a tunnel copying at full speed. `TestTunnelPumpNeverDelegates` pins that.
+The splice path was once measured at ~80 MB/s on Windows loopback against
+~400 MB/s for the loop; a later re-measure on the dev box did not reproduce that
+gap, so treat the numbers as history and the no-splice design as the current
+reason.
+A parked copy still holds its buffer, so an idle tunnel costs two of them -- the
+reason the default buffer is 32 KiB and not larger.
+`tunnel.arm` reclaims a pair that moves zero bytes in either direction for
+`relay_idle_timeout` (`10m` by default, `"0s"` to disable): both ends can sit
+silent with no FIN and no RST -- a peer that lost power, a NAT entry that aged
+out -- and nothing arriving means nothing errors, so the kernel keepalive (2 idle
+hours on Linux) is the only other thing that notices. The window is generous
+because the default also covers the clients, where a push long-poll legitimately
+idles at zero bytes for minutes; a public server should tighten it to a few
+minutes. Neither direction's end tears the pair down: `run` waits for both pumps,
+because one side going quiet says nothing about data still queued the other way,
+and closing a socket with unread received data sends an RST.
 
 ## Logging
 
