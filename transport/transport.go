@@ -34,6 +34,7 @@ type Options struct {
 	Address   string // host:port
 	Path      string // xhttp request path, default "/"
 	Authority string // SNI / Host header, defaults to the address host
+	Mode      string // xhttp mode: "", "auto", "stream-one", "stream-up", "packet-up"
 	// server side
 	TlsCertPath string
 	TlsKeyPath  string
@@ -67,9 +68,12 @@ func New(p ProtocolType, o Options) Transport {
 			address:   o.Address,
 			path:      o.Path,
 			authority: o.Authority,
-			useTLS:    o.UseTLS,
-			certPath:  o.TlsCertPath,
-			keyPath:   o.TlsKeyPath,
+			// resolved once here, at config time, so a typo is reported once
+			// instead of on every tunnel this endpoint opens.
+			mode:     ResolveXhttpMode(o.Mode),
+			useTLS:   o.UseTLS,
+			certPath: o.TlsCertPath,
+			keyPath:  o.TlsKeyPath,
 		}
 	default:
 		return tcpTransport{address: o.Address}
