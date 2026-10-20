@@ -26,7 +26,10 @@ func (router Router) MatchAny(key string) bool {
 	return false
 }
 
-func NewRouter(tag string, rules []string, routerPath string) (router *Router, err error) {
+// NewRouter compiles one routing rule set. It cannot fail: an unreadable
+// rules.dat and a malformed inline rule are both reported and skipped, because
+// a router that lost part of its list still has to route the rest.
+func NewRouter(tag string, rules []string, routerPath string) (router *Router) {
 	allRules, readErr := readAllFromGob(routerPath)
 	if readErr != nil {
 		// a missing/broken rules.dat only disables named lists (geosite/geoip);
@@ -94,11 +97,8 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router, e
 		Tag:      tag,
 		matchers: make([]Matcher, 0),
 	}
-	logger.Infof(
-		"%d rules with %d domains loaded",
-		len(allRules),
-		len(fullDomains)+len(regexStrings)+len(domains)+len(keywords),
-	)
+	logger.Infof("router %s: %d rules from %d named lists", tag,
+		len(fullDomains)+len(regexStrings)+len(domains)+len(keywords), len(allRules))
 	router.matchers = append(router.matchers, NewFullMatcher(fullDomains))
 	router.matchers = append(router.matchers, NewRegexMatcher(regexStrings))
 	router.matchers = append(router.matchers, NewDomainMatcher(domains))

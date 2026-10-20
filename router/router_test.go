@@ -11,13 +11,7 @@ import (
 // router. Inline domain:/full:/keyword:/regexp: rules still have to load and
 // match.
 func TestNewRouterSurvivesMissingRulesFile(t *testing.T) {
-	r, err := NewRouter("us", []string{"domain:abc.com", "full:exact.io", "geosite:missing"}, "does_not_exist.dat")
-	if err != nil {
-		t.Fatalf("NewRouter returned err on missing rules file: %v", err)
-	}
-	if r == nil {
-		t.Fatal("NewRouter returned nil router")
-	}
+	r := NewRouter("us", []string{"domain:abc.com", "full:exact.io", "geosite:missing"}, "does_not_exist.dat")
 	// inline domain rule works with correct suffix semantics
 	if !r.MatchAny("www.abc.com") {
 		t.Error("inline domain: rule did not match www.abc.com")
@@ -158,10 +152,7 @@ func TestNamedListIncludeExpansion(t *testing.T) {
 	}
 	f.Close()
 
-	r, err := NewRouter("direct", []string{"cn"}, path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	r := NewRouter("direct", []string{"cn"}, path)
 	for _, host := range []string{"direct.cn", "www.qq.com", "exact.cn"} {
 		if !r.MatchAny(host) {
 			t.Errorf("include-expanded list did not match %q", host)
