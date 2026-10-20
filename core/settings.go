@@ -53,60 +53,70 @@ type settings struct {
 	consoleLevel     logger.Level
 }
 
+// duration resolves one timeout field: unset keeps the default, and a negative
+// window is refused here rather than armed as a deadline in the past.
+func duration(name, raw string, def time.Duration) (time.Duration, error) {
+	if raw == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, errors.New("bad general." + name + " " + raw)
+	}
+	if d < 0 {
+		return 0, errors.New("general." + name + " must not be negative")
+	}
+	return d, nil
+}
+
+// level resolves one log level field the same way.
+func level(name, raw string, def logger.Level) (logger.Level, error) {
+	if raw == "" {
+		return def, nil
+	}
+	l, ok := logger.ParseLevel(raw)
+	if !ok {
+		return 0, errors.New("bad general." + name + " " + raw)
+	}
+	return l, nil
+}
+
 func (c Config) resolveSettings() (settings, error) {
-	s := settings{
-		handshakeTimeout: defaultHandshakeTimeout,
-		dialTimeout:      defaultDialTimeout,
-		relayIdle:        defaultRelayIdle,
-		relayBufferKiB:   defaultRelayBufferKiB,
-		logLevel:         logger.Debug,
-		consoleLevel:     logger.Info,
+	handshake, err := duration("handshake_timeout", c.General.HandshakeTimeout, defaultHandshakeTimeout)
+	if err != nil {
+		return settings{}, err
 	}
-	if c.General.HandshakeTimeout != "" {
-		d, err := time.ParseDuration(c.General.HandshakeTimeout)
-		if err != nil {
-			return settings{}, errors.New("bad general.handshake_timeout " + c.General.HandshakeTimeout)
-		}
-		s.handshakeTimeout = d
+	dial, err := duration("dial_timeout", c.General.DialTimeout, defaultDialTimeout)
+	if err != nil {
+		return settings{}, err
 	}
-	if c.General.DialTimeout != "" {
-		d, err := time.ParseDuration(c.General.DialTimeout)
-		if err != nil {
-			return settings{}, errors.New("bad general.dial_timeout " + c.General.DialTimeout)
-		}
-		s.dialTimeout = d
+	idle, err := duration("relay_idle_timeout", c.General.RelayIdleTimeout, defaultRelayIdle)
+	if err != nil {
+		return settings{}, err
 	}
-	if c.General.RelayIdleTimeout != "" {
-		d, err := time.ParseDuration(c.General.RelayIdleTimeout)
-		if err != nil {
-			return settings{}, errors.New("bad general.relay_idle_timeout " + c.General.RelayIdleTimeout)
-		}
-		if d < 0 {
-			return settings{}, errors.New("general.relay_idle_timeout must not be negative; use \"0s\" to disable reclamation")
-		}
-		s.relayIdle = d
+	file, err := level("log_level", c.General.LogLevel, logger.Debug)
+	if err != nil {
+		return settings{}, err
 	}
-	if c.General.RelayBufferKiB != 0 {
+	console, err := level("console_level", c.General.ConsoleLevel, logger.Info)
+	if err != nil {
+		return settings{}, err
+	}
+	buffer := defaultRelayBufferKiB
+	if c.General.RelayBufferKiB != 0 { // 0 means unset, not "no buffer"
 		if c.General.RelayBufferKiB < 1 || c.General.RelayBufferKiB > maxRelayBufferKiB {
 			return settings{}, fmt.Errorf("general.relay_buffer_kib must be within 1-%d, got %d",
 				maxRelayBufferKiB, c.General.RelayBufferKiB)
 		}
-		s.relayBufferKiB = c.General.RelayBufferKiB
+		buffer = c.General.RelayBufferKiB
 	}
-	if c.General.LogLevel != "" {
-		l, ok := logger.ParseLevel(c.General.LogLevel)
-		if !ok {
-			return settings{}, errors.New("bad general.log_level " + c.General.LogLevel)
-		}
-		s.logLevel = l
-	}
-	if c.General.ConsoleLevel != "" {
-		l, ok := logger.ParseLevel(c.General.ConsoleLevel)
-		if !ok {
-			return settings{}, errors.New("bad general.console_level " + c.General.ConsoleLevel)
-		}
-		s.consoleLevel = l
-	}
-	s.logFile = c.General.LogFile
-	return s, nil
+	return settings{
+		handshakeTimeout: handshake,
+		dialTimeout:      dial,
+		relayIdle:        idle,
+		relayBufferKiB:   buffer,
+		logFile:          c.General.LogFile,
+		logLevel:         file,
+		consoleLevel:     console,
+	}, nil
 }

@@ -96,6 +96,7 @@ func TestResolveSettingsRejectsBadInput(t *testing.T) {
 	}{
 		{`{"general":{"log_level":"nope"}}`, true},
 		{`{"general":{"handshake_timeout":"3"}}`, true},
+		{`{"general":{"handshake_timeout":"-1s"}}`, true},
 		{`{"general":{"dial_timeout":"xx"}}`, true},
 		{`{"general":{"relay_idle_timeout":"-5s"}}`, true},
 		{`{"general":{"relay_idle_timeout":"0s"}}`, false}, // explicit off, must be valid

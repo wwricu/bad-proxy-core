@@ -15,7 +15,7 @@ import (
 type Proxy struct {
 	inbounds  []Inbound
 	outbounds map[string]*Outbound
-	routers   []router.Router
+	routers   []*router.Router
 	settings  settings
 }
 
@@ -32,42 +32,34 @@ type Config struct {
 // handshake protocol names live with the protocols package instead.
 const FREEDOM = "freedom"
 
-func newProxy(config Config) (newProxy Proxy, err error) {
-	settings, err := config.resolveSettings()
-	if err != nil {
-		return Proxy{}, err
+func newProxy(config Config, set settings) (*Proxy, error) {
+	// set once, before any tunnel exists: no relay ever copies through a buffer
+	// sized from a stale setting
+	relayBufferSize = set.relayBufferKiB * 1024
+	p := Proxy{
+		settings:  set,
+		outbounds: make(map[string]*Outbound, len(config.Outbounds)),
 	}
-	relayBufferSize = settings.relayBufferKiB * 1024
-	newProxy.settings = settings
-	newProxy.outbounds = make(map[string]*Outbound, 10)
-	newProxy.routers = make([]router.Router, 0)
 	for _, r := range config.Router {
-		rules := make([]string, 0)
-		rules = append(rules, r.Rules...)
-		newRouter, err := router.NewRouter(r.Tag, rules, config.RouterPath)
-		if err != nil {
-			logger.Warnf("wrong router: %s", r.Tag)
-			continue
-		}
-		newProxy.routers = append(newProxy.routers, *newRouter)
+		p.routers = append(p.routers, router.NewRouter(r.Tag, r.Rules, config.RouterPath))
 	}
 
 	for _, in := range config.Inbounds {
-		newProxy.inbounds = append(newProxy.inbounds, NewInbound(in, settings))
+		p.inbounds = append(p.inbounds, NewInbound(in, set))
 	}
 
 	for _, out := range config.Outbounds {
-		newOutbound := NewOutbound(out, settings)
-		if _, exist := newProxy.outbounds[out.Tag]; exist {
-			return Proxy{}, errors.New("duplicate outbound tag " + out.Tag)
+		if _, exist := p.outbounds[out.Tag]; exist {
+			return nil, errors.New("duplicate outbound tag " + out.Tag)
 		}
-		newProxy.outbounds[out.Tag] = &newOutbound
+		created := NewOutbound(out, set)
+		p.outbounds[out.Tag] = &created
 	}
 
-	if _, exist := newProxy.outbounds[""]; exist != true {
-		return Proxy{}, errors.New("no default outbound, add one with empty \"tag\" (use \"" + FREEDOM + "\" for direct)")
+	if _, exist := p.outbounds[""]; !exist {
+		return nil, errors.New("no default outbound, add one with empty \"tag\" (use \"" + FREEDOM + "\" for direct)")
 	}
-	return
+	return &p, nil
 }
 
 func (proxy *Proxy) Start() {
@@ -170,18 +162,6 @@ func (proxy Proxy) route(address string) Outbound {
 	return *proxy.outbounds[""]
 }
 
-func readConfig(path string) (config Config, err error) {
-	file, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	err = json.Unmarshal(file, &config)
-	if err != nil {
-		return
-	}
-	return config, nil
-}
-
 // New builds a Proxy from an in-memory Config without touching the filesystem,
 // for embedding (e.g. a desktop GUI) that wants Start/Stop around a live
 // instance. It configures process-wide logging from the resolved settings and
@@ -194,17 +174,19 @@ func New(cfg Config) (*Proxy, error) {
 	if err := logger.Configure(set.logFile, set.logLevel, set.consoleLevel); err != nil {
 		logger.Warnf("log file %s unavailable, console only: %v", set.logFile, err)
 	}
-	p, err := newProxy(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return &p, nil
+	return newProxy(cfg, set)
 }
 
-func Startup(configPath string, routerPath string) (err error) {
-	config, err := readConfig(configPath)
+// Startup is the CLI path: the config comes from a file, and the engine is
+// listening before this returns.
+func Startup(configPath string, routerPath string) error {
+	file, err := os.ReadFile(configPath)
 	if err != nil {
-		return
+		return err
+	}
+	var config Config
+	if err = json.Unmarshal(file, &config); err != nil {
+		return err
 	}
 	config.RouterPath = routerPath
 
@@ -213,5 +195,5 @@ func Startup(configPath string, routerPath string) (err error) {
 		return err
 	}
 	p.Start()
-	return
+	return nil
 }
