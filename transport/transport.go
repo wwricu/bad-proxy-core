@@ -2,6 +2,8 @@ package transport
 
 import (
 	"net"
+
+	"github.com/wwricu/bad-proxy-core/logger"
 )
 
 type ProtocolType string
@@ -23,6 +25,12 @@ func GetProtocol(protocol string) ProtocolType {
 	// "http2", "ws" and "wss" were removed: WebSocket was replaced by xhttp
 	// stream mode (same role, no third-party dependency) and the raw h2
 	// transport never had a working client.
+	//
+	// An empty type is the documented TCP default; a set-but-unknown one is a
+	// typo, and quietly plain-dialing it is the worst way to find out.
+	if protocol != "" {
+		logger.Warnf("unknown transport type %q, using tcp", protocol)
+	}
 	return ""
 }
 
