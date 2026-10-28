@@ -22,9 +22,7 @@ type Entry struct {
 }
 
 type ParsedList struct {
-	Name      string
-	Inclusion map[string]bool
-	Entry     []Entry
+	Entry []Entry
 }
 
 func readAllFromGob(gobName string) (allRules map[string]*ParsedList, err error) {

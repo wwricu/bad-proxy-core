@@ -2,6 +2,7 @@ package common
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -54,7 +55,7 @@ var httpRequestMethods = [...][]byte{
 // request line, used to answer probes that hit the tunnel port directly.
 func LooksLikeHttpRequest(p []byte) bool {
 	for _, m := range httpRequestMethods {
-		if len(p) >= len(m) && string(p[:len(m)]) == string(m) {
+		if bytes.HasPrefix(p, m) {
 			return true
 		}
 	}

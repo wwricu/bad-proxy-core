@@ -29,7 +29,10 @@ type HttpRequest struct {
 	Address string
 }
 
-const maxHttpHeadBytes = 16 * 1024
+const (
+	maxHttpHeadBytes = 16 * 1024 // one line
+	maxHttpHeadTotal = 64 * 1024 // the whole head; many short lines are bounded too
+)
 
 func readRequestHead(in *common.Buffered) (HttpRequest, []byte, error) {
 	var raw bytes.Buffer
@@ -56,6 +59,9 @@ func readRequestHead(in *common.Buffered) (HttpRequest, []byte, error) {
 		}
 		raw.WriteString(l)
 		raw.WriteString("\r\n")
+		if raw.Len() > maxHttpHeadTotal {
+			return HttpRequest{}, nil, errors.New("http head too large")
+		}
 		if l == "" {
 			break
 		}

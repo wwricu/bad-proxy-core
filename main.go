@@ -34,11 +34,11 @@ func main() {
 	routerPath := flag.String("router-path", "rules.dat", "router data path")
 	flag.Parse()
 
-	if *versionFlag == true {
+	if *versionFlag {
 		fmt.Println("Bad Proxy Golang", versionMsg)
 		return
 	}
-	if *helpFlag == true {
+	if *helpFlag {
 		fmt.Print(helpMsg)
 		return
 	}

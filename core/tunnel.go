@@ -150,7 +150,9 @@ func (t *tunnel) touch() {
 // alone is guesswork - transports differ in what a closed conn reports - so the
 // reclaim records its own hand in fired.
 func (t *tunnel) benign(err error) bool {
-	return errors.Is(err, net.ErrClosed) || t.fired.Load()
+	// io.ErrClosedPipe is what an xhttp session returns once its peer is gone;
+	// it is the same teardown net.ErrClosed reports on a socket.
+	return errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || t.fired.Load()
 }
 
 // arm starts the idle reclaim for this tunnel and returns its stop, which the

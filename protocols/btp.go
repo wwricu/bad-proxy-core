@@ -47,10 +47,8 @@ const (
 	timeDiffRand    = 30
 )
 
-var getBtpCache = sync.OnceValue(func() *common.LRU[string] {
-	cache := &common.LRU[string]{}
-	cache.Init(210000)
-	return cache
+var getBtpCache = sync.OnceValue(func() *common.LRU {
+	return common.NewLRU(210000)
 })
 
 // btpHeader is the parsed, not yet authenticated, request head.

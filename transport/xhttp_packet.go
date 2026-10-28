@@ -33,9 +33,9 @@ import (
 )
 
 const (
-	// clientPieceBytes is what one packet-up POST carries. It matches the
-	// default relay buffer, so a tunnel does not split one copied chunk into
-	// several posts for no reason.
+	// clientPieceBytes is what one packet-up POST carries. It is twice the
+	// default relay buffer, so a relay read never splits a piece and a piece
+	// still arrives in a clean number of reads.
 	clientPieceBytes = 64 * 1024
 
 	// maxPieceBytes is Xray's cap for one post body (scMaxEachPostBytes); a
@@ -46,6 +46,16 @@ const (
 	// once. Past that a write waits for a slot instead of queueing memory, which
 	// is the same backpressure the window gives on the downlink.
 	maxPiecesInFlight = 16
+
+	// responseHeaderTimeout is deliberately separate from the connect budget: a
+	// buffering reverse proxy may legitimately hold a response head until the
+	// upload body yields bytes, which takes longer than establishing the hop.
+	responseHeaderTimeout = 30 * time.Second
+
+	// maxSplitSessions caps the sessions an unauthenticated peer can create.
+	// Each one holds two goroutines, channels and a reorder map before any
+	// credential is checked; the cap turns that into bounded memory.
+	maxSplitSessions = 4096
 
 	// maxBufferedPieces is Xray's scMaxBufferedPosts: if the reorder queue grows
 	// this large the gap is not a reordering hiccup but a dead tunnel, so the
@@ -71,11 +81,16 @@ const (
 // must not be evicted after one use.
 func (t xhttpTransport) flowTransport() *http.Transport {
 	return &http.Transport{
-		ForceAttemptHTTP2:     true,
-		TLSClientConfig:       clientTlsConfig(t.address, t.authority),
-		DialContext:           func(ctx context.Context, _, _ string) (net.Conn, error) { return net.Dial("tcp", t.address) },
+		ForceAttemptHTTP2:   true,
+		TLSClientConfig:     clientTlsConfig(t.address, t.authority),
+		TLSHandshakeTimeout: t.timeout,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			// The context is the tunnel's own way out: closing it cancels a
+			// connect that would otherwise keep dialing after the tunnel is gone.
+			return (&net.Dialer{Timeout: t.timeout}).DialContext(ctx, "tcp", t.address)
+		},
 		MaxIdleConnsPerHost:   maxPiecesInFlight,
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 	}
 }
 
@@ -83,7 +98,7 @@ func (t xhttpTransport) flowTransport() *http.Transport {
 // download GET is only flushed once the server is talking and the upload POST
 // is only answered once the tunnel ends, so Dial must not block on either; the
 // two channels are how whoever needs the answer collects it later.
-func startFlow(ctx context.Context, tr *http.Transport, req *http.Request) (chan *http.Response, chan error) {
+func startFlow(tr *http.Transport, req *http.Request) (chan *http.Response, chan error) {
 	respCh := make(chan *http.Response, 1)
 	errCh := make(chan error, 1)
 	go func() {
@@ -114,7 +129,7 @@ func (t xhttpTransport) dialStreamUp() (net.Conn, error) {
 		cancel()
 		return nil, err
 	}
-	downResp, downErr := startFlow(ctx, tr, req)
+	downResp, downErr := startFlow(tr, req)
 
 	// The upload is one body that never ends until the tunnel closes, so the
 	// pipe is the conn's writer and nothing here waits for its answer.
@@ -125,7 +140,7 @@ func (t xhttpTransport) dialStreamUp() (net.Conn, error) {
 		pw.Close()
 		return nil, err
 	}
-	upResp, upErr := startFlow(ctx, tr, req)
+	upResp, upErr := startFlow(tr, req)
 
 	conn := &XhttpConn{writer: pw, remote: parseAddr(t.address)}
 	down := &lazyBody{respCh: downResp, errCh: downErr}
@@ -155,7 +170,7 @@ func (t xhttpTransport) dialPacketUp() (net.Conn, error) {
 		cancel()
 		return nil, err
 	}
-	downResp, downErr := startFlow(ctx, tr, req)
+	downResp, downErr := startFlow(tr, req)
 
 	pieces := &packetWriter{window: make(chan struct{}, maxPiecesInFlight), dead: make(chan struct{})}
 	pieces.send = func(seq int, body io.Reader) (*http.Response, error) {
@@ -222,6 +237,12 @@ type packetWriter struct {
 func (w *packetWriter) shutdown(err error) {
 	w.mu.Lock()
 	if w.err == nil {
+		if err == nil {
+			// A clean shutdown still has to refuse later writes; without a
+			// value here failure() reports nil and a racing Write posts a piece
+			// after the tunnel is gone.
+			err = io.ErrClosedPipe
+		}
 		w.err = err
 	}
 	w.mu.Unlock()
@@ -551,7 +572,11 @@ func deadlineTimer(d time.Time) (<-chan time.Time, func()) {
 // flushed before there is anything to send: the client's Dial does not wait for
 // it, but a reverse proxy in front may hold the whole response until then.
 func (listener *XhttpListener) serveDownlink(w http.ResponseWriter, r *http.Request, sid string) {
-	s := listener.session(sid, parseAddr(r.RemoteAddr))
+	s, err := listener.session(sid, parseAddr(r.RemoteAddr))
+	if err != nil {
+		refuse(w, http.StatusServiceUnavailable)
+		return
+	}
 	if !s.downClaimed.CompareAndSwap(false, true) {
 		// A second download for a session that already has one would interleave
 		// two readers over one stream.
@@ -613,7 +638,11 @@ func (listener *XhttpListener) serveDownlink(w http.ResponseWriter, r *http.Requ
 // lets one reader path serve both split-flow modes; a single producer hands out
 // the sequence numbers itself, so the reorder window stays empty by construction.
 func (listener *XhttpListener) serveUploadBody(w http.ResponseWriter, r *http.Request, sid string) {
-	s := listener.session(sid, parseAddr(r.RemoteAddr))
+	s, err := listener.session(sid, parseAddr(r.RemoteAddr))
+	if err != nil {
+		refuse(w, http.StatusServiceUnavailable)
+		return
+	}
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Time{})
 	_ = rc.SetWriteDeadline(time.Time{})
@@ -640,7 +669,11 @@ func (listener *XhttpListener) serveUploadBody(w http.ResponseWriter, r *http.Re
 
 // servePiece is one packet-up upload post.
 func (listener *XhttpListener) servePiece(w http.ResponseWriter, r *http.Request, sid string, seq int) {
-	s := listener.session(sid, parseAddr(r.RemoteAddr))
+	s, err := listener.session(sid, parseAddr(r.RemoteAddr))
+	if err != nil {
+		refuse(w, http.StatusServiceUnavailable)
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxPieceBytes+1))
 	if err != nil {
 		s.close()

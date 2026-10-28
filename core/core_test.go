@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wwricu/bad-proxy-core/common"
 	"github.com/wwricu/bad-proxy-core/logger"
 )
 
@@ -27,17 +28,17 @@ func TestResolveSettingsDefaults(t *testing.T) {
 	if s.consoleLevel != logger.Info {
 		t.Errorf("console_level should default info, got %v", s.consoleLevel)
 	}
-	if s.handshakeTimeout != defaultHandshakeTimeout {
-		t.Errorf("handshake default = %v, want %v", s.handshakeTimeout, defaultHandshakeTimeout)
+	if s.handshakeTimeout != common.DefaultHandshakeTimeout {
+		t.Errorf("handshake default = %v, want %v", s.handshakeTimeout, common.DefaultHandshakeTimeout)
 	}
-	if s.dialTimeout != defaultDialTimeout {
-		t.Errorf("dial default = %v, want %v", s.dialTimeout, defaultDialTimeout)
+	if s.dialTimeout != common.DefaultDialTimeout {
+		t.Errorf("dial default = %v, want %v", s.dialTimeout, common.DefaultDialTimeout)
 	}
-	if s.relayIdle != defaultRelayIdle {
-		t.Errorf("relay idle default = %v, want %v", s.relayIdle, defaultRelayIdle)
+	if s.relayIdle != common.DefaultRelayIdleTimeout {
+		t.Errorf("relay idle default = %v, want %v", s.relayIdle, common.DefaultRelayIdleTimeout)
 	}
-	if s.relayBufferKiB != defaultRelayBufferKiB {
-		t.Errorf("buffer default = %d, want %d", s.relayBufferKiB, defaultRelayBufferKiB)
+	if s.relayBufferKiB != common.DefaultRelayBufferKiB {
+		t.Errorf("buffer default = %d, want %d", s.relayBufferKiB, common.DefaultRelayBufferKiB)
 	}
 }
 
@@ -97,7 +98,9 @@ func TestResolveSettingsRejectsBadInput(t *testing.T) {
 		{`{"general":{"log_level":"nope"}}`, true},
 		{`{"general":{"handshake_timeout":"3"}}`, true},
 		{`{"general":{"handshake_timeout":"-1s"}}`, true},
+		{`{"general":{"handshake_timeout":"0s"}}`, true}, // would expire every handshake
 		{`{"general":{"dial_timeout":"xx"}}`, true},
+		{`{"general":{"dial_timeout":"0s"}}`, true},
 		{`{"general":{"relay_idle_timeout":"-5s"}}`, true},
 		{`{"general":{"relay_idle_timeout":"0s"}}`, false}, // explicit off, must be valid
 		{`{"general":{"relay_buffer_kib":0}}`, false},      // treated as unset, must be valid
@@ -217,6 +220,21 @@ func TestTunnelPumpReportsWriteError(t *testing.T) {
 type failWriter struct{ err error }
 
 func (w failWriter) Write([]byte) (int, error) { return 0, w.err }
+
+// A pipe closing under a relay is a teardown, not a copy error: the xhttp
+// session reports it as io.ErrClosedPipe, and it must not flood the log.
+func TestTunnelBenignClosedPipe(t *testing.T) {
+	tr := &tunnel{}
+	if !tr.benign(net.ErrClosed) {
+		t.Error("net.ErrClosed should be benign")
+	}
+	if !tr.benign(io.ErrClosedPipe) {
+		t.Error("io.ErrClosedPipe should be benign")
+	}
+	if tr.benign(errors.New("boom")) {
+		t.Error("an unrelated error must not be benign")
+	}
+}
 
 // The pump must do the copying itself. io.Copy prefers src.WriteTo and then
 // dst.ReadFrom - exactly the two methods *net.TCPConn offers - and either one

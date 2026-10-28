@@ -19,15 +19,17 @@ type Matcher interface {
 type FullMatcher map[string]bool
 
 func NewFullMatcher(fullDomains []string) Matcher {
-	var fullMatcher FullMatcher = make(map[string]bool, len(fullDomains))
+	matcher := make(FullMatcher, len(fullDomains))
 	for _, domain := range fullDomains {
-		fullMatcher[domain] = true
+		// DNS names are case insensitive; domain: already folds case, so full:
+		// must not be the one rule family that misses "Example.com".
+		matcher[strings.ToLower(domain)] = true
 	}
-	return fullMatcher
+	return matcher
 }
 
 func (matcher FullMatcher) MatchAny(key string) bool {
-	_, exist := matcher[key]
+	_, exist := matcher[strings.ToLower(key)]
 	return exist
 }
 
@@ -36,16 +38,16 @@ func (matcher FullMatcher) MatchAny(key string) bool {
 type RegexMatcher []*regexp.Regexp
 
 func NewRegexMatcher(regexStrings []string) Matcher {
-	var regexMatcher RegexMatcher = make([]*regexp.Regexp, 0, len(regexStrings))
+	matcher := make(RegexMatcher, 0, len(regexStrings))
 	for _, ex := range regexStrings {
 		compiled, err := regexp.Compile(ex)
 		if err != nil {
 			logger.Warnf("bad rule regex, skipped: %s", ex)
 			continue
 		}
-		regexMatcher = append(regexMatcher, compiled)
+		matcher = append(matcher, compiled)
 	}
-	return regexMatcher
+	return matcher
 }
 
 func (matcher RegexMatcher) MatchAny(key string) bool {

@@ -2,6 +2,8 @@ package transport
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +14,10 @@ import (
 
 	"github.com/wwricu/bad-proxy-core/common"
 )
+
+func dialXhttp(o Options) (net.Conn, error) { return New("xhttp", o).Dial() }
+
+func listenXhttp(o Options) (net.Listener, error) { return New("xhttp", o).Listen() }
 
 // echoXhttpListener answers like the relay does: hand back the first n bytes
 // read, then close. The copy buffer is deliberately much smaller than one
@@ -65,47 +71,6 @@ func echoPayload(n int) []byte {
 		b[i] = byte('a' + i%26)
 	}
 	return b
-}
-
-func TestXhttpRoundTrip(t *testing.T) {
-	addr := freeAddr(t)
-	listener, err := ListenXhttp(Options{Address: addr, Path: "/xrt"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	echoXhttpListener(t, listener, 4, true)
-
-	dialed := make(chan net.Conn, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		conn, err := DialXhttp(Options{Address: addr, Path: "/xrt"})
-		if err != nil {
-			errCh <- err
-			return
-		}
-		dialed <- conn
-	}()
-
-	select {
-	case err := <-errCh:
-		t.Fatalf("dial: %v", err)
-	case conn := <-dialed:
-		defer conn.Close()
-		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-		if _, err := conn.Write([]byte("ping")); err != nil {
-			t.Fatal(err)
-		}
-		resp := make([]byte, 4)
-		if _, err := io.ReadFull(conn, resp); err != nil {
-			t.Fatal(err)
-		}
-		if string(resp) != "ping" {
-			t.Fatalf("got %q", resp)
-		}
-	case <-time.After(8 * time.Second):
-		t.Fatal("timed out: neither dial error nor established tunnel")
-	}
 }
 
 // Each pairing that is supposed to connect has to carry a payload bigger than
@@ -162,7 +127,7 @@ func runXhttpEcho(t *testing.T, clientMode, serverMode string, wantOK bool, size
 	t.Helper()
 
 	addr := freeAddr(t)
-	listener, err := ListenXhttp(Options{Address: addr, Path: "/xrt", Mode: serverMode})
+	listener, err := listenXhttp(Options{Address: addr, Path: "/xrt", Mode: serverMode})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +138,7 @@ func runXhttpEcho(t *testing.T, clientMode, serverMode string, wantOK bool, size
 	dialed := make(chan net.Conn, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		conn, err := DialXhttp(Options{Address: addr, Path: "/xrt", Mode: clientMode})
+		conn, err := dialXhttp(Options{Address: addr, Path: "/xrt", Mode: clientMode})
 		if err != nil {
 			errCh <- err
 			return
@@ -242,7 +207,7 @@ func firstMismatch(a, b []byte) int {
 // handed to the relay out of order.
 func TestXhttpPacketReorder(t *testing.T) {
 	addr := freeAddr(t)
-	listener, err := ListenXhttp(Options{Address: addr, Path: "/xrt", Mode: XhttpModePacketUp})
+	listener, err := listenXhttp(Options{Address: addr, Path: "/xrt", Mode: XhttpModePacketUp})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +279,7 @@ func TestXhttpServerRawProbe(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			addr := freeAddr(t)
-			listener, err := ListenXhttp(Options{Address: addr, Path: "/xrt"})
+			listener, err := listenXhttp(Options{Address: addr, Path: "/xrt"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -366,7 +331,7 @@ func TestXhttpServerRawProbe(t *testing.T) {
 // is what TestXhttpServerRawProbe pins down.
 func TestXhttpGates(t *testing.T) {
 	addr := freeAddr(t)
-	listener, err := ListenXhttp(Options{Address: addr, Path: "/xrt"})
+	listener, err := listenXhttp(Options{Address: addr, Path: "/xrt"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +401,7 @@ func TestXhttpPathShape(t *testing.T) {
 	}
 
 	for _, bad := range []string{"/xrtx", "/xrt/../etc", "/xrt/a/b/c", "/"} {
-		if _, matched := xhttpSegments("/xrt/", bad); matched && bad != "/" {
+		if _, matched := xhttpSegments("/xrt/", bad); matched {
 			t.Errorf("%s should not match /xrt/", bad)
 		}
 	}
@@ -460,11 +425,6 @@ func TestXhttpModeResolution(t *testing.T) {
 		if got := ResolveXhttpMode(in); got != want {
 			t.Errorf("ResolveXhttpMode(%q) = %q, want %q", in, got, want)
 		}
-	}
-	// The answer is used as the mode of both an inbound and an outbound, so it
-	// must not blow up on the one value that carries no name.
-	if got := xhttpAnswers("", http.MethodPost, 0); !got {
-		t.Error("an unset server mode must answer stream-one")
 	}
 }
 
@@ -508,7 +468,7 @@ func rawXhttpPost(t *testing.T, addr, path, query string) (int, string) {
 // id, and the client waits forever for a response the old session already had.
 func TestXhttpLateDownlinkGetsTheTail(t *testing.T) {
 	addr := freeAddr(t)
-	listener, err := ListenXhttp(Options{Address: addr, Path: "/xrt", Mode: XhttpModePacketUp})
+	listener, err := listenXhttp(Options{Address: addr, Path: "/xrt", Mode: XhttpModePacketUp})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -665,5 +625,51 @@ func TestPaddingLooksLikeXrays(t *testing.T) {
 	}
 	if randomPadding("0") != "" || randomPadding("") != "" {
 		t.Fatal("a zero or empty spec must pad nothing")
+	}
+}
+
+// The tunnel's request context is the only thing that can cancel a connect in
+// progress; a bare net.Dial answered to nothing.
+func TestXhttpDialContextHonorsContext(t *testing.T) {
+	tr := xhttpTransport{address: "192.0.2.1:81", timeout: time.Second}.flowTransport()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := tr.DialContext(ctx, "", ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("dial err = %v, want context.Canceled", err)
+	}
+}
+
+// Sessions are created before any credential is checked. Without a cap, a peer
+// can make the server allocate a session (plus two goroutines) per invented id.
+func TestXhttpSessionCap(t *testing.T) {
+	listener := &XhttpListener{
+		ch:          make(chan net.Conn, 4),
+		closed:      make(chan struct{}),
+		sessions:    make(map[string]*xhttpSession),
+		maxSessions: 1,
+	}
+	s, err := listener.session("a", nil)
+	if err != nil || s == nil {
+		t.Fatalf("first session: %v", err)
+	}
+	if _, err := listener.session("b", nil); err == nil {
+		t.Fatal("second id was created past the cap")
+	}
+	// A flow for an id that already owns a session must still resolve: upload
+	// and download arrive as separate requests.
+	if again, err := listener.session("a", nil); err != nil || again != s {
+		t.Fatalf("existing session lookup after cap: %v", err)
+	}
+	s.downClaimed.Store(true) // let reap return immediately on close
+	_ = listener.Close()
+}
+
+// A clean teardown used to leave failure() nil, so a Write racing the close
+// could still post a piece after the tunnel was gone.
+func TestPacketWriterRefusesWriteAfterShutdown(t *testing.T) {
+	w := &packetWriter{window: make(chan struct{}, 1), dead: make(chan struct{})}
+	w.shutdown(nil)
+	if _, err := w.Write([]byte("piece")); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("write after shutdown = %v, want io.ErrClosedPipe", err)
 	}
 }

@@ -3,6 +3,7 @@ package transport
 import (
 	"crypto/tls"
 	"net"
+	"time"
 )
 
 // tlsTransport wraps a plain TCP connection in a TLS record layer. Server-side
@@ -14,10 +15,11 @@ type tlsTransport struct {
 	serverName string // SNI, empty means derive from the address host
 	certPath   string // server only
 	keyPath    string // server only
+	timeout    time.Duration
 }
 
 func (t tlsTransport) Dial() (net.Conn, error) {
-	return tls.Dial("tcp", t.address, clientTlsConfig(t.address, t.serverName))
+	return dialTLS(t.address, clientTlsConfig(t.address, t.serverName), t.timeout)
 }
 
 func (t tlsTransport) Listen() (net.Listener, error) {

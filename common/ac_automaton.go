@@ -10,26 +10,22 @@ type ACAutomaton struct {
 	emit    bool
 }
 
-func NewTrie() *ACAutomaton {
-	trie := &ACAutomaton{
-		success: make(map[uint8]*ACAutomaton),
-		failure: nil,
-		emit:    false,
-	}
-	trie.failure = trie
-	return trie
+func newState() *ACAutomaton {
+	state := &ACAutomaton{success: make(map[uint8]*ACAutomaton)}
+	state.failure = state
+	return state
 }
 
-// Add inserts one pattern. Iteration is byte-wise, not `for i := range s`,
+// add inserts one pattern. Iteration is byte-wise, not `for i := range s`,
 // because range yields rune indices and would skip continuation bytes of a
 // multi-byte UTF-8 pattern.
-func (root *ACAutomaton) Add(value string) {
+func (root *ACAutomaton) add(value string) {
 	curr := root
 	for i := 0; i < len(value); i++ {
 		ch := value[i]
 		child, exist := curr.success[ch]
 		if !exist {
-			child = NewTrie()
+			child = newState()
 			curr.success[ch] = child
 		}
 		curr = child
@@ -38,12 +34,12 @@ func (root *ACAutomaton) Add(value string) {
 }
 
 func NewACAutomaton(patterns []string) *ACAutomaton {
-	ac := NewTrie()
+	ac := newState()
 	for _, pattern := range patterns {
 		if pattern == "" {
 			continue
 		}
-		ac.Add(pattern)
+		ac.add(pattern)
 	}
 	ac.build()
 	return ac

@@ -19,7 +19,6 @@ type OutboundConfig struct {
 }
 
 type Outbound struct {
-	tag       string
 	protocol  string
 	secret    string
 	transport transport.Transport
@@ -34,51 +33,44 @@ func NewOutbound(c OutboundConfig, set settings) Outbound {
 		address = net.JoinHostPort(c.Host, c.Port)
 	}
 	return Outbound{
-		tag:       c.Tag,
 		protocol:  proto,
 		secret:    c.Secret,
 		handshake: set.handshakeTimeout,
 		dial:      set.dialTimeout,
 		transport: transport.New(
-			transport.GetProtocol(c.Transport.Type),
+			c.Transport.Type,
 			transport.Options{
-				Address:   address,
-				Path:      c.Transport.Path,
-				Authority: c.Transport.Authority,
-				Mode:      c.Transport.Mode,
-				UseTLS:    c.Transport.Tls,
+				Address:          address,
+				Path:             c.Transport.Path,
+				Authority:        c.Transport.Authority,
+				Mode:             c.Transport.Mode,
+				UseTLS:           c.Transport.Tls,
+				HandshakeTimeout: set.handshakeTimeout,
 			},
 		),
 	}
 }
 
-func (ob *Outbound) Dial(targetAddr string) (out OutboundConnect, err error) {
+func (ob *Outbound) Dial(targetAddr string) (net.Conn, error) {
 	// direct relay to the target, no upstream
 	if ob.protocol == FREEDOM {
-		conn, err := net.DialTimeout("tcp", targetAddr, ob.dial)
-		if err != nil {
-			return nil, err
-		}
-		out = protocols.NewFreeOutbound(conn)
-		out.SetDeadline(time.Now().Add(ob.handshake))
-	} else {
-		var conn net.Conn
-		conn, err = ob.transport.Dial()
-		if err != nil {
-			return nil, err
-		}
-		if err = conn.SetDeadline(time.Now().Add(ob.handshake)); err != nil {
-			_ = conn.Close()
-			return nil, err
-		}
-		// protocol matching lives in the protocols package; NewOutbound owns the
-		// conn and closes it if the handshake setup fails.
-		out, err = protocols.NewOutbound(ob.protocol, ob.secret, conn)
-		if err != nil {
-			return nil, err
-		}
+		return net.DialTimeout("tcp", targetAddr, ob.dial)
 	}
 
+	conn, err := ob.transport.Dial()
+	if err != nil {
+		return nil, err
+	}
+	if err = conn.SetDeadline(time.Now().Add(ob.handshake)); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	// protocol matching lives in the protocols package; NewOutbound owns the
+	// conn and closes it if the handshake setup fails.
+	out, err := protocols.NewOutbound(ob.protocol, ob.secret, conn)
+	if err != nil {
+		return nil, err
+	}
 	if err = out.Connect(targetAddr); err != nil {
 		_ = out.Close()
 		return nil, err
@@ -86,7 +78,3 @@ func (ob *Outbound) Dial(targetAddr string) (out OutboundConnect, err error) {
 	_ = out.SetDeadline(time.Time{}) // handshake done, relay has no deadline
 	return out, nil
 }
-
-// OutboundConnect is the handshake+relay view of an upstream connection; the
-// concrete protocols and their matching live in the protocols package.
-type OutboundConnect = protocols.Outbound

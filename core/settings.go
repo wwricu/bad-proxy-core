@@ -34,14 +34,6 @@ type GeneralConfig struct {
 	ConsoleLevel string `json:"console_level"`
 }
 
-const (
-	defaultHandshakeTimeout = common.DefaultHandshakeTimeout
-	defaultDialTimeout      = common.DefaultDialTimeout
-	defaultRelayIdle        = common.DefaultRelayIdleTimeout
-	defaultRelayBufferKiB   = common.DefaultRelayBufferKiB
-	maxRelayBufferKiB       = common.MaxRelayBufferKiB
-)
-
 // settings is GeneralConfig after validation, with defaults applied.
 type settings struct {
 	handshakeTimeout time.Duration
@@ -82,15 +74,21 @@ func level(name, raw string, def logger.Level) (logger.Level, error) {
 }
 
 func (c Config) resolveSettings() (settings, error) {
-	handshake, err := duration("handshake_timeout", c.General.HandshakeTimeout, defaultHandshakeTimeout)
+	handshake, err := duration("handshake_timeout", c.General.HandshakeTimeout, common.DefaultHandshakeTimeout)
 	if err != nil {
 		return settings{}, err
 	}
-	dial, err := duration("dial_timeout", c.General.DialTimeout, defaultDialTimeout)
+	if handshake <= 0 {
+		return settings{}, errors.New("general.handshake_timeout must be positive")
+	}
+	dial, err := duration("dial_timeout", c.General.DialTimeout, common.DefaultDialTimeout)
 	if err != nil {
 		return settings{}, err
 	}
-	idle, err := duration("relay_idle_timeout", c.General.RelayIdleTimeout, defaultRelayIdle)
+	if dial <= 0 {
+		return settings{}, errors.New("general.dial_timeout must be positive")
+	}
+	idle, err := duration("relay_idle_timeout", c.General.RelayIdleTimeout, common.DefaultRelayIdleTimeout)
 	if err != nil {
 		return settings{}, err
 	}
@@ -102,11 +100,11 @@ func (c Config) resolveSettings() (settings, error) {
 	if err != nil {
 		return settings{}, err
 	}
-	buffer := defaultRelayBufferKiB
+	buffer := common.DefaultRelayBufferKiB
 	if c.General.RelayBufferKiB != 0 { // 0 means unset, not "no buffer"
-		if c.General.RelayBufferKiB < 1 || c.General.RelayBufferKiB > maxRelayBufferKiB {
+		if c.General.RelayBufferKiB < 1 || c.General.RelayBufferKiB > common.MaxRelayBufferKiB {
 			return settings{}, fmt.Errorf("general.relay_buffer_kib must be within 1-%d, got %d",
-				maxRelayBufferKiB, c.General.RelayBufferKiB)
+				common.MaxRelayBufferKiB, c.General.RelayBufferKiB)
 		}
 		buffer = c.General.RelayBufferKiB
 	}

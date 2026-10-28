@@ -27,7 +27,7 @@ func (router Router) MatchAny(key string) bool {
 }
 
 // NewRouter compiles one routing rule set. It cannot fail: an unreadable
-// rules.dat and a malformed inline rule are both reported and skipped, because
+// rules.dat and an unknown named list are both skipped without remedy, because
 // a router that lost part of its list still has to route the rest.
 func NewRouter(tag string, rules []string, routerPath string) (router *Router) {
 	allRules, readErr := readAllFromGob(routerPath)
@@ -44,9 +44,9 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router) {
 	regexStrings := make([]string, 0)
 
 	// add stores one entry under its rule type. include entries are expanded
-	// only inside a named list (expand true); seen guards cycles between lists.
-	var add func(entry Entry, seen map[string]bool, expand bool)
-	add = func(entry Entry, seen map[string]bool, expand bool) {
+	// inside a named list; seen guards cycles between lists.
+	var add func(entry Entry, seen map[string]bool)
+	add = func(entry Entry, seen map[string]bool) {
 		switch RuleType(entry.Type) {
 		case FULL:
 			fullDomains = append(fullDomains, entry.Value)
@@ -57,9 +57,6 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router) {
 		case REGEXP:
 			regexStrings = append(regexStrings, entry.Value)
 		case INCLUDE:
-			if !expand {
-				return
-			}
 			name := strings.ToUpper(entry.Value)
 			if seen[name] {
 				return
@@ -67,7 +64,7 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router) {
 			seen[name] = true
 			if sub, exist := allRules[name]; exist && sub != nil {
 				for _, e := range sub.Entry {
-					add(e, seen, true)
+					add(e, seen)
 				}
 			}
 		}
@@ -80,14 +77,13 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router) {
 		}
 		switch ruleType {
 		case FULL, DOMAIN, KEYWORD, REGEXP:
-			add(Entry{Type: string(ruleType), Value: ruleStr}, nil, false)
+			add(Entry{Type: string(ruleType), Value: ruleStr}, nil)
 		default: // "rule:string" || "string"
-			ruleList, exist := allRules[strings.ToUpper(ruleStr)]
-			if !exist || ruleList == nil {
+			if allRules[strings.ToUpper(ruleStr)] == nil {
 				break
 			}
 			add(Entry{Type: string(INCLUDE), Value: ruleStr},
-				map[string]bool{}, true)
+				map[string]bool{})
 		}
 	}
 

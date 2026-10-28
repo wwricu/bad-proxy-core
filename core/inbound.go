@@ -65,7 +65,7 @@ func NewInbound(c InboundConfig, set settings) Inbound {
 		handshake: set.handshakeTimeout,
 		address:   address,
 		transport: transport.New(
-			transport.GetProtocol(c.Transport.Type),
+			c.Transport.Type,
 			transport.Options{
 				Address:     address,
 				Path:        c.Transport.Path,

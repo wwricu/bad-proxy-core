@@ -5,32 +5,34 @@ import (
 	"sync"
 )
 
-type LRU[T string] struct {
-	data    map[T]bool
-	queue   *Queue[T]
-	lock    *sync.Mutex
+type LRU struct {
+	data    map[string]bool
+	queue   *Queue[string]
+	lock    sync.Mutex
 	maxSize int
 }
 
-func (lru *LRU[T]) Init(maxSize int) {
-	lru.maxSize = maxSize
-	lru.data = make(map[T]bool, lru.maxSize)
-	lru.queue = NewQueue[T](lru.maxSize, maxSize)
-	lru.lock = new(sync.Mutex)
+func NewLRU(maxSize int) *LRU {
+	return &LRU{
+		data:    make(map[string]bool, maxSize),
+		queue:   NewQueue[string](maxSize, maxSize),
+		maxSize: maxSize,
+	}
 }
 
-func (lru *LRU[T]) Add(key T) (err error) {
+func (lru *LRU) Add(key string) error {
 	lru.lock.Lock()
 	defer lru.lock.Unlock()
-	_, exist := lru.data[key]
-	if exist == true {
-		return errors.New("exising digest, possible replay attack")
+	if _, exist := lru.data[key]; exist {
+		return errors.New("existing digest, possible replay attack")
 	}
 
 	if lru.queue.Size() == lru.maxSize {
 		delete(lru.data, lru.queue.Pop())
 	}
-
+	if err := lru.queue.Push(key); err != nil {
+		return err
+	}
 	lru.data[key] = true
-	return lru.queue.Push(key)
+	return nil
 }

@@ -104,8 +104,6 @@ func ResolveXhttpMode(mode string) string {
 	return ""
 }
 
-var errListenerClosed = fmt.Errorf("xhttp listener closed: %w", net.ErrClosed)
-
 // xhttpTransport is the whole xhttp endpoint: the address and path every
 // request goes to, the mode that picks which requests a tunnel makes, and the
 // TLS material. Padding is not among these fields: how much filler a request
@@ -119,14 +117,8 @@ type xhttpTransport struct {
 	useTLS    bool   // client only: https scheme + TLS config
 	certPath  string // server only
 	keyPath   string // server only
+	timeout   time.Duration
 }
-
-// DialXhttp and ListenXhttp are package-level shorthands over the flat Options
-// so tests and quick call sites need no struct; they build the transport via New
-// and run its method.
-func DialXhttp(o Options) (net.Conn, error) { return New(XHTTP, o).Dial() }
-
-func ListenXhttp(o Options) (net.Listener, error) { return New(XHTTP, o).Listen() }
 
 // ---------------------------------------------------------------- client
 
@@ -208,7 +200,7 @@ func (t xhttpTransport) dialStreamOne() (net.Conn, error) {
 		return nil, err
 	}
 
-	tr := t.flowTransport()     // the split-flow modes' client transport: one source for the 30s bound
+	tr := t.flowTransport()     // the split-flow modes' client transport: one source for its budgets
 	tr.DisableKeepAlives = true // one request, one connection: it goes away with the tunnel
 
 	// Fire the request without blocking on the response. The server flushes its
@@ -293,19 +285,23 @@ type XhttpListener struct {
 	closeOnce sync.Once
 
 	// sessions holds the stream-up and packet-up tunnels, which are spread
-	// over several requests and therefore outlive any one handler.
-	mu       sync.Mutex
-	sessions map[string]*xhttpSession
+	// over several requests and therefore outlive any one handler. The cap is
+	// checked before a new session is created, because nothing about the
+	// request is authenticated yet.
+	mu          sync.Mutex
+	sessions    map[string]*xhttpSession
+	maxSessions int
 }
 
 func (t xhttpTransport) Listen() (net.Listener, error) {
 	listener := &XhttpListener{
-		path:     xhttpPath(t.path),
-		mode:     t.mode,
-		addr:     parseAddr(t.address),
-		ch:       make(chan net.Conn, 32),
-		closed:   make(chan struct{}),
-		sessions: make(map[string]*xhttpSession),
+		path:        xhttpPath(t.path),
+		mode:        t.mode,
+		addr:        parseAddr(t.address),
+		ch:          make(chan net.Conn, 32),
+		closed:      make(chan struct{}),
+		sessions:    make(map[string]*xhttpSession),
+		maxSessions: maxSplitSessions,
 	}
 
 	mux := http.NewServeMux()
@@ -314,7 +310,13 @@ func (t xhttpTransport) Listen() (net.Listener, error) {
 	var protocols http.Protocols
 	protocols.SetHTTP1(true) // HTTP/1.1 chunked duplex, the nginx-hop mode
 	protocols.SetUnencryptedHTTP2(true)
-	server := &http.Server{Handler: mux, Protocols: &protocols}
+	server := &http.Server{
+		Handler:   mux,
+		Protocols: &protocols,
+		// A handler clears the deadlines once a tunnel exists; before that, a
+		// peer that sends half a request head must not pin the connection.
+		ReadHeaderTimeout: common.DefaultHandshakeTimeout,
+	}
 	listener.server = server
 
 	tcpListener, err := net.Listen("tcp", t.address)
@@ -459,7 +461,7 @@ func (listener *XhttpListener) serveStreamOne(w http.ResponseWriter, r *http.Req
 func (listener *XhttpListener) Accept() (net.Conn, error) {
 	select {
 	case <-listener.closed:
-		return nil, errListenerClosed
+		return nil, net.ErrClosed
 	case conn := <-listener.ch:
 		return conn, nil
 	}
@@ -481,11 +483,16 @@ func (listener *XhttpListener) Addr() net.Addr { return listener.addr }
 // session returns the tunnel for sid, starting one if this is the first of its
 // requests. Whichever flow arrives first is the one that hands the connection to
 // Accept, so a client that posts before it opens its download is not stalled.
-func (listener *XhttpListener) session(sid string, remote net.Addr) *xhttpSession {
+// The cap applies to new ids only: an existing tunnel keeps its session when
+// the map is full, or an upload arriving after a burst would kill it.
+func (listener *XhttpListener) session(sid string, remote net.Addr) (*xhttpSession, error) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
 	if s, ok := listener.sessions[sid]; ok {
-		return s
+		return s, nil
+	}
+	if len(listener.sessions) >= listener.maxSessions {
+		return nil, fmt.Errorf("xhttp: session cap %d reached", listener.maxSessions)
 	}
 	s := newXhttpSession(sid, remote, listener)
 	listener.sessions[sid] = s
@@ -498,7 +505,7 @@ func (listener *XhttpListener) session(sid string, remote net.Addr) *xhttpSessio
 		}
 	}()
 	go s.reap()
-	return s
+	return s, nil
 }
 
 func (listener *XhttpListener) forget(sid string) {

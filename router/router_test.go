@@ -32,6 +32,18 @@ func TestNewRouterSurvivesMissingRulesFile(t *testing.T) {
 // The whole point of replacing the byte automaton: domain: is a label-boundary
 // suffix match, not a substring match. These are the false positives a naive
 // substring automaton produced, plus the cases that must still match.
+// full: must fold case like domain: does; a DNS name is not case sensitive and
+// a CONNECT target carries whatever the client typed.
+func TestFullMatcherCaseInsensitive(t *testing.T) {
+	m := NewFullMatcher([]string{"Exact.IO"})
+	if !m.MatchAny("exact.io") || !m.MatchAny("EXACT.IO") {
+		t.Error("full: rule missed a case variant of the same host")
+	}
+	if m.MatchAny("www.exact.io") {
+		t.Error("full: rule matched a subdomain")
+	}
+}
+
 func TestDomainMatcher(t *testing.T) {
 	m := NewDomainMatcher([]string{"abc.com", "example.org"})
 
@@ -128,16 +140,16 @@ func TestKeywordMatcherEmpty(t *testing.T) {
 // against lists that include each other.
 func TestNamedListIncludeExpansion(t *testing.T) {
 	all := map[string]*ParsedList{
-		"CN": {Name: "CN", Entry: []Entry{
+		"CN": {Entry: []Entry{
 			{Type: "domain", Value: "direct.cn"},
 			{Type: "include", Value: "tencent"},
 			{Type: "include", Value: "geo-cn"},
 		}},
-		"TENCENT": {Name: "TENCENT", Entry: []Entry{
+		"TENCENT": {Entry: []Entry{
 			{Type: "domain", Value: "qq.com"},
 			{Type: "include", Value: "cn"}, // cycle back to the parent
 		}},
-		"GEO-CN": {Name: "GEO-CN", Entry: []Entry{
+		"GEO-CN": {Entry: []Entry{
 			{Type: "full", Value: "exact.cn"},
 			{Type: "include", Value: "nonexistent-list"},
 		}},
