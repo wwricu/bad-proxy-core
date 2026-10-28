@@ -143,7 +143,7 @@ func (t xhttpTransport) dialStreamUp() (net.Conn, error) {
 	upResp, upErr := startFlow(tr, req)
 
 	conn := &XhttpConn{writer: pw, remote: parseAddr(t.address)}
-	down := &lazyBody{respCh: downResp, errCh: downErr}
+	down := &lazyBody{respCh: downResp, errCh: downErr, name: "xhttp"}
 	conn.reader = down
 	conn.onClose = func() {
 		pw.Close()
@@ -182,7 +182,7 @@ func (t xhttpTransport) dialPacketUp() (net.Conn, error) {
 	}
 
 	conn := &XhttpConn{writer: pieces, remote: parseAddr(t.address)}
-	down := &lazyBody{respCh: downResp, errCh: downErr}
+	down := &lazyBody{respCh: downResp, errCh: downErr, name: "xhttp"}
 	conn.reader = down
 	pieces.onFail = func(error) { conn.Close() }
 	conn.onClose = func() {

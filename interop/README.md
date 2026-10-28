@@ -1,8 +1,9 @@
-# xhttp interop matrix
+# xhttp and http2 interop matrices
 
-Proves the claim in [README](../README.md): that BPC's `xhttp` transport really
-speaks Xray's XHTTP, in both directions, in all four modes. Nothing else in the
-test suite can show this — the Go tests exercise BPC against itself.
+Proves the claims in [README](../README.md): that BPC's `xhttp` transport really
+speaks Xray's XHTTP (both directions, all four modes) and that `http2` speaks
+Xray's network `http`. Nothing else in the test suite can show this — the Go
+tests exercise BPC against itself.
 
 ## Running it
 
@@ -55,6 +56,18 @@ gets mistaken for a broken transport.
 Each mode is tried pinned to itself and against an `auto` hub, in both
 directions, plus the unset/default client mode — 25 cases, and the expected
 result is `=== 25 passed, 0 failed ===` with exit 0.
+
+## The http2 matrix
+
+`run_http2.sh` is the same idea for the `http2` transport (Xray's network
+`http`), with **VLESS and Trojan** as the application layer: `A` BPC client ->
+Xray hub over h2c, `B` Xray client -> BPC hub over TLS+`h2` (Xray's client
+refuses the transport without TLS, so the harness issues a throwaway
+certificate and sets `allowInsecure`), `C` BPC <-> BPC, and `D` the Xray <-> Xray
+control. Eight cases, expected `=== 8 passed, 0 failed ===`.
+
+Xray **v1.8.24** is the binary this was proved against; newer Xray majors no
+longer ship the `http` transport at all.
 
 ## Why this is not in CI
 

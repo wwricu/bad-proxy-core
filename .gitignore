@@ -18,3 +18,6 @@ conf/config.json
 # interop matrix scratch: built binaries, generated configs, the Xray binary
 interop/work/
 interop/xray/
+
+# http2 matrix scratch, same as interop/work/
+interop/work-http2/

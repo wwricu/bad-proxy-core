@@ -226,6 +226,7 @@ func (t xhttpTransport) dialStreamOne() (net.Conn, error) {
 	conn.reader = &lazyBody{
 		respCh: respCh,
 		errCh:  errCh,
+		name:   "xhttp",
 		// A rejected request has to unblock the handshake write parked on the
 		// pipe, or the tunnel dies with a timeout instead of an error.
 		onFail: func(error) { conn.Close() },
@@ -245,7 +246,11 @@ func (t xhttpTransport) dialStreamOne() (net.Conn, error) {
 type lazyBody struct {
 	respCh chan *http.Response
 	errCh  chan error
-	onFail func(error)
+	name   string // protocol name for error messages
+	// wantProtoMajor rejects a response that did not negotiate the protocol the
+	// transport is named after; zero accepts whatever came back.
+	wantProtoMajor int
+	onFail         func(error)
 
 	resp  *http.Response
 	err   error
@@ -259,7 +264,11 @@ func (l *lazyBody) Read(p []byte) (int, error) {
 			if l.resp.StatusCode != http.StatusOK {
 				body, _ := io.ReadAll(io.LimitReader(l.resp.Body, 512))
 				_ = l.resp.Body.Close()
-				l.err = fmt.Errorf("xhttp: server answered %d: %s", l.resp.StatusCode, string(body))
+				l.err = fmt.Errorf("%s: server answered %d: %s", l.name, l.resp.StatusCode, string(body))
+				l.onFail(l.err)
+			} else if l.wantProtoMajor != 0 && l.resp.ProtoMajor != l.wantProtoMajor {
+				_ = l.resp.Body.Close()
+				l.err = fmt.Errorf("%s: front answered %s, want HTTP/%d", l.name, l.resp.Proto, l.wantProtoMajor)
 				l.onFail(l.err)
 			}
 		case l.err = <-l.errCh:

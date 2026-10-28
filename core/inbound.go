@@ -18,9 +18,9 @@ import (
 // the fields it uses; the server derives plaintext-vs-TLS from cert/key being
 // set, so there is no separate server "tls" toggle.
 type TransportConfig struct {
-	Type      string `json:"type"`      // "tcp", "tls", "xhttp"
-	Path      string `json:"path"`      // xhttp request path
-	Authority string `json:"authority"` // client: SNI / Host override
+	Type      string `json:"type"`      // "tcp", "tls", "xhttp", "http2"
+	Path      string `json:"path"`      // xhttp/http2 request path
+	Authority string `json:"authority"` // client: SNI / Host; http2 server: the only host it answers
 	Mode      string `json:"mode"`      // xhttp: "auto", "stream-one", "stream-up", "packet-up"
 	Tls       bool   `json:"tls"`       // client: encrypt the hop
 	Cert      string `json:"cert"`      // server: TLS certificate path
@@ -69,6 +69,7 @@ func NewInbound(c InboundConfig, set settings) Inbound {
 			transport.Options{
 				Address:     address,
 				Path:        c.Transport.Path,
+				Authority:   c.Transport.Authority,
 				Mode:        c.Transport.Mode,
 				TlsCertPath: c.Transport.Cert,
 				TlsKeyPath:  c.Transport.Key,

@@ -12,9 +12,9 @@ sits behind a proxy.
 * Application-layer protocols: **VLESS**, **Trojan**, **BTP v2** (this
   project's own protocol), plus plain **SOCKS5** / **HTTP proxy** inbounds and
   a direct **freedom** outbound.
-* Transports: **raw TCP**, **TLS**, and **xhttp** (Xray's XHTTP, all four of
-  its modes: `stream-one`, `stream-up`, `packet-up` and `auto`, interoperable
-  with Xray in both directions).
+* Transports: **raw TCP**, **TLS**, **xhttp** (Xray's XHTTP, all four of its
+  modes: `stream-one`, `stream-up`, `packet-up` and `auto`) and **http2**
+  (Xray's network `http`), interoperable with Xray in both directions.
 * Rule-based routing (full / domain / keyword / regexp lists, optionally the
   `rules.dat` GeoIP-style dataset) selecting different outbounds per target.
 
@@ -23,10 +23,10 @@ As of **v2.0.0-beta2** the per-endpoint transport options live in a nested
 the client-side `insecure` toggle was removed — the client always verifies the
 server certificate. See [Transport object](#transport-object).
 
-WebSocket (`ws`/`wss`) and the old half-implemented `http2` transport were
-removed: WebSocket duplicated what xhttp does while adding a third-party
-dependency and per-message framing overhead, and the old `http2` transport had
-no working client at all. See [protocol notes](#protocol-notes).
+WebSocket (`ws`/`wss`) was removed: it duplicated what xhttp does while adding a
+third-party dependency and per-message framing overhead. The old `http2`
+transport, which had no working client, has been replaced by one that speaks
+Xray's network `http` from both sides. See [protocol notes](#protocol-notes).
 
 ## Supported protocols at a glance
 
@@ -64,15 +64,16 @@ address itself rather than dialing an upstream.
 | **tcp** (default) | — | raw TCP; cleartext, so pair with an encrypted app protocol or a proxy |
 | **tls** | server `cert`+`key`; client `tls: true`+`authority` | stdlib TLS (≥1.2); server TLS is on when `cert`/`key` are set |
 | **xhttp** | `path`, `mode` (both); client `tls`, `authority`; server `cert`+`key` | Xray's XHTTP: one duplex POST, or split up/down flows, or packetised uploads; runs under nginx or Caddy |
+| **http2** | `path` (both); client `tls`, `authority`; server `cert`+`key` | Xray's network `http`: one `PUT` whose body is the uplink and whose response body is the downlink, over HTTP/2 (TLS+ALPN `h2` when encrypted, h2c when not); runs under nginx or Caddy |
 
-Every app protocol above (`vless`, `trojan`, `btp`) can use any of these three
-transports. `tls` and `xhttp` combine — xhttp over real TLS.
+Every app protocol above (`vless`, `trojan`, `btp`) can use any of these
+transports. `tls` and `xhttp`/`http2` combine — the HTTP transport over real TLS.
 
 ## Requirements
 
-Go **1.24 or newer** (`go.mod` pins `go 1.24.12`; the xhttp transport relies on
-`http.Protocols`, `ResponseController.EnableFullDuplex`, and
-`ForceAttemptHTTP2`). The same binary runs on both ends; only the config
+Go **1.24 or newer** (`go.mod` pins `go 1.24.12`; the xhttp and http2
+transports rely on `http.Protocols` - including its unencrypted HTTP/2 - plus
+`ResponseController.EnableFullDuplex` and `ForceAttemptHTTP2`). The same binary runs on both ends; only the config
 differs.
 
 ```sh
@@ -243,12 +244,12 @@ client always verifies the server certificate.
 
 | field | applies to | meaning |
 |---|---|---|
-| `type` | all | `tcp` (default), `tls`, `xhttp` |
-| `path` | xhttp | request path; the server matches it as a **prefix** (others get 404), the client sends it. Normalised to a leading *and* a trailing slash, so `/xrt` is sent and matched as `/xrt/` — what Xray does |
+| `type` | all | `tcp` (default), `tls`, `xhttp`, `http2` |
+| `path` | xhttp, http2 | request path; the server matches it as a **prefix** (others get 404), the client sends it. xhttp normalises it to a leading *and* a trailing slash (`/xrt` → `/xrt/`); http2 adds the leading slash only, because Xray's http transport compares the bare path as its prefix |
 | `mode` | xhttp | `stream-one` (one duplex POST), `stream-up` (POST up, GET down), `packet-up` (GET down, numbered POSTs up), or `auto`. Never sent on the wire: a **client** dials the named shape, a **server** only restricts which shapes it answers. Client unset → `stream-one`; server unset → answers everything |
-| `cert`, `key` | server, tls/xhttp | TLS cert + private key paths; presence is what enables server TLS (a server has no separate `tls` toggle) |
-| `tls` | client, xhttp | encrypt the hop (https scheme + TLS). Plaintext to a TLS port and vice-versa both fail, so the client must state it |
-| `authority` | client, tls/xhttp | SNI / `Host` override; defaults to `host` |
+| `cert`, `key` | server, tls/xhttp/http2 | TLS cert + private key paths; presence is what enables server TLS (a server has no separate `tls` toggle) |
+| `tls` | client, xhttp/http2 | encrypt the hop (https scheme + TLS). Plaintext to a TLS port and vice-versa both fail, so the client must state it |
+| `authority` | client tls/xhttp/http2; server http2 | client: SNI / `Host` override, defaults to `host`. http2 server: the only `Host` it answers; unset accepts any, like Xray |
 
 Defaults that are not configured live in the `common` package: the xhttp
 `?x_padding=` filler (`"100-1000"` random letters, Xray's own default, always on
