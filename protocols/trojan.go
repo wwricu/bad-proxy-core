@@ -2,6 +2,7 @@ package protocols
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -51,10 +52,8 @@ func (in *TrojanInbound) Connect() (targetAddr string, err error) {
 		return "", errors.New("malformed trojan header")
 	}
 	authorized := false
-	want := make([]byte, hashLen)
 	for _, password := range in.passwords {
-		copy(want, trojanHash(password))
-		if subtleEqual(head[:hashLen], want) {
+		if subtle.ConstantTimeCompare(head[:hashLen], []byte(trojanHash(password))) == 1 {
 			authorized = true
 			break
 		}
@@ -99,24 +98,12 @@ func (out *TrojanOutbound) Connect(targetAddr string) error {
 	request := make([]byte, 0, 96)
 	request = append(request, trojanHash(out.password)...)
 	request = append(request, '\r', '\n', 0x01)
-	writer := addressWriter{w: &request}
-	if err := common.EncodeTarget(writer, targetAddr, common.TargetCodingSocks); err != nil {
+	address, err := common.EncodeTarget(targetAddr, common.TargetCodingSocks)
+	if err != nil {
 		return err
 	}
+	request = append(request, address...)
 	request = append(request, '\r', '\n')
-	_, err := out.Write(request)
+	_, err = out.Write(request)
 	return err
-}
-
-// subtleEqual is a constant-time byte comparison, so a wrong password cannot
-// be recovered byte by byte through timing.
-func subtleEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var v byte
-	for i := range a {
-		v |= a[i] ^ b[i]
-	}
-	return v == 0
 }

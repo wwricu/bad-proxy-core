@@ -17,7 +17,7 @@ type GeneralConfig struct {
 	// DialTimeout bounds a direct (freedom) connect to the target ("15s").
 	DialTimeout string `json:"dial_timeout"`
 	// RelayIdleTimeout reclaims a tunnel that has moved zero bytes in either
-	// direction for this long ("5m"). Unset (default) applies
+	// direction for this long ("10m"). Unset (default) applies
 	// common.DefaultRelayIdleTimeout; an explicit "0s" disables reclamation
 	// entirely, so a legitimately idle long-lived tunnel is never cut.
 	RelayIdleTimeout string `json:"relay_idle_timeout"`

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"errors"
 	"net"
 	"time"
@@ -56,10 +57,7 @@ type Inbound struct {
 }
 
 func NewInbound(c InboundConfig, set settings) Inbound {
-	proto := c.Protocol
-	if proto == "" {
-		proto = protocols.BTP
-	}
+	proto := cmp.Or(c.Protocol, protocols.BTP)
 	address := net.JoinHostPort(c.Host, c.Port)
 	return Inbound{
 		protocol:  proto,

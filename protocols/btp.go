@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"io"
 	"math/big"
@@ -48,24 +47,15 @@ const (
 	timeDiffRand    = 30
 )
 
-var (
-	btpLRU     *common.LRU[string]
-	btpLRUOnce sync.Once
-)
-
-func getBtpCache() *common.LRU[string] {
-	btpLRUOnce.Do(func() {
-		instance := &common.LRU[string]{}
-		instance.Init(210000)
-		btpLRU = instance
-	})
-	return btpLRU
-}
+var getBtpCache = sync.OnceValue(func() *common.LRU[string] {
+	cache := &common.LRU[string]{}
+	cache.Init(210000)
+	return cache
+})
 
 // btpHeader is the parsed, not yet authenticated, request head.
 type btpHeader struct {
 	digest       []byte
-	confusion    []byte
 	timestamp    uint32
 	host         string
 	port         uint16
@@ -73,9 +63,6 @@ type btpHeader struct {
 }
 
 func (h *btpHeader) validate(secret string) error {
-	if len(h.confusion) > maxConfusion {
-		return errors.New("unexpected confusion length")
-	}
 	diff := int(time.Now().Unix()) - int(h.timestamp)
 	if diff < -timeThreshold || timeThreshold < diff {
 		return errors.New("timeout or replay attack")
@@ -85,7 +72,7 @@ func (h *btpHeader) validate(secret string) error {
 	if !hmac.Equal(mac.Sum(nil), h.digest) {
 		return errors.New("digest mismatch, unauthorized connect")
 	}
-	return getBtpCache().Add(hex.EncodeToString(h.digest))
+	return getBtpCache().Add(string(h.digest))
 }
 
 func readBtpHeader(in *common.Buffered) (*btpHeader, error) {
@@ -112,7 +99,6 @@ func readBtpHeader(in *common.Buffered) (*btpHeader, error) {
 		if err != nil {
 			return nil, err
 		}
-		header.confusion = confusion
 		header.signedRegion = append(header.signedRegion, confusion...)
 	}
 
@@ -212,7 +198,7 @@ func (in *BtpInbound) Connect() (targetAddr string, err error) {
 		// so it must never report a successful handshake
 		return "", errors.New("btp inbound configured without a secret")
 	}
-	in.probe = in.Peek(8)
+	in.probe = append([]byte(nil), in.Peek(8)...)
 	if common.LooksLikeHttpRequest(in.probe) {
 		// a web probe can never be a BTP handshake; fail now so Fallback()
 		// answers while the client is still connected
@@ -222,14 +208,12 @@ func (in *BtpInbound) Connect() (targetAddr string, err error) {
 	if err != nil {
 		return "", err
 	}
-	lastErr := errors.New("btp auth rejected")
 	for _, secret := range in.secrets {
 		if err = header.validate(secret); err == nil {
 			return net.JoinHostPort(header.host, strconv.Itoa(int(header.port))), nil
 		}
-		lastErr = err
 	}
-	return "", lastErr
+	return "", err
 }
 
 func (in *BtpInbound) Fallback() {

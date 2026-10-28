@@ -120,10 +120,11 @@ func (out *Socks5Outbound) Connect(targetAddr string) error {
 	}
 	request := make([]byte, 0, 64)
 	request = append(request, socksVersion, socksCmdConnect, 0x00)
-	writer := addressWriter{w: &request}
-	if err := common.EncodeTarget(writer, targetAddr, common.TargetCodingSocks); err != nil {
+	address, err := common.EncodeTarget(targetAddr, common.TargetCodingSocks)
+	if err != nil {
 		return err
 	}
+	request = append(request, address...)
 	if _, err = out.Write(request); err != nil {
 		return err
 	}

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"net"
 	"time"
 
@@ -27,10 +28,7 @@ type Outbound struct {
 }
 
 func NewOutbound(c OutboundConfig, set settings) Outbound {
-	proto := c.Protocol
-	if proto == "" {
-		proto = protocols.BTP
-	}
+	proto := cmp.Or(c.Protocol, protocols.BTP)
 	address := ""
 	if c.Host != "" {
 		address = net.JoinHostPort(c.Host, c.Port)

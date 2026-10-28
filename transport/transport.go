@@ -14,8 +14,6 @@ const (
 	XHTTP ProtocolType = "xhttp"
 )
 
-func (protocol ProtocolType) Str() string { return string(protocol) }
-
 func GetProtocol(protocol string) ProtocolType {
 	p := ProtocolType(protocol)
 	switch p {
@@ -87,10 +85,3 @@ func New(p ProtocolType, o Options) Transport {
 		return tcpTransport{address: o.Address}
 	}
 }
-
-// Dial and Listen are one-call shorthands over the flat options, for the
-// "I just want a conn/listener now" case (tests, quick setup). Normal code
-// builds a Transport once with New and reuses it.
-func Dial(p ProtocolType, o Options) (net.Conn, error) { return New(p, o).Dial() }
-
-func Listen(p ProtocolType, o Options) (net.Listener, error) { return New(p, o).Listen() }

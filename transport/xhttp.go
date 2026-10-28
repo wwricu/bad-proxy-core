@@ -208,13 +208,8 @@ func (t xhttpTransport) dialStreamOne() (net.Conn, error) {
 		return nil, err
 	}
 
-	tr := &http.Transport{
-		DisableKeepAlives:     true, // one transport, one tunnel
-		ForceAttemptHTTP2:     true,
-		TLSClientConfig:       clientTlsConfig(t.address, t.authority),
-		DialContext:           func(ctx context.Context, _, _ string) (net.Conn, error) { return net.Dial("tcp", t.address) },
-		ResponseHeaderTimeout: 30 * time.Second,
-	}
+	tr := t.flowTransport()     // the split-flow modes' client transport: one source for the 30s bound
+	tr.DisableKeepAlives = true // one request, one connection: it goes away with the tunnel
 
 	// Fire the request without blocking on the response. The server flushes its
 	// 200 before reading the body, but a buffering reverse proxy (Caddy) holds

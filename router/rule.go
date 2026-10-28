@@ -21,11 +21,6 @@ type Entry struct {
 	Value string
 }
 
-type List struct {
-	Name  string
-	Entry []Entry
-}
-
 type ParsedList struct {
 	Name      string
 	Inclusion map[string]bool

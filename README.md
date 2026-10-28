@@ -296,7 +296,7 @@ precedes the address** (Xray's addrParser is PortThenAddress; atyp table
 1=IPv4, 2=Domain, 3=IPv6). There is no status byte anymore — a failed
 handshake simply closes. Also note Xray flushes the 2-byte response only
 together with the first downstream data, so BPC reads it lazily in the relay
-path (`VlessOutbound.Read` / `WriteTo`) instead of blocking on it during the
+path (`VlessOutbound.Read`) instead of blocking on it during the
 handshake — which is what lets the tunnel survive a buffering proxy.
 
 Only TCP (`cmd=1`) and an empty `flow` are supported; xtls-rprx-vision needs an

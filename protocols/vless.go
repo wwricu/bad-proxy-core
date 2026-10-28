@@ -33,8 +33,6 @@ outer tls transport). Only CMD=1 (TCP) is supported.
 const (
 	VlessVersion = 0
 	CmdTCP       = 1
-	CmdUDP       = 2
-	CmdMux       = 3
 )
 
 // ErrNoStreamUpgrade signals an xtls-rprx-vision flow, which needs an inner
@@ -53,22 +51,6 @@ func ParseID(id string) (VlessUser, error) {
 		return VlessUser{}, errors.New("vless: id must be a 16 byte uuid")
 	}
 	return VlessUser(p), nil
-}
-
-func (id VlessUser) String() string {
-	s := hex.EncodeToString(id[:])
-	return s[:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:]
-}
-
-// addressWriter lets EncodeTarget emit straight into a request buffer instead
-// of a socket; shared by the VLESS, Trojan and SOCKS outbounds.
-type addressWriter struct {
-	w *[]byte
-}
-
-func (a addressWriter) Write(p []byte) (int, error) {
-	*a.w = append(*a.w, p...)
-	return len(p), nil
 }
 
 // VlessInbound is the server side: it decodes the request header, authorizes
@@ -97,7 +79,7 @@ func NewVlessInbound(conn net.Conn, ids []string) (*VlessInbound, error) {
 }
 
 func (in *VlessInbound) Connect() (targetAddr string, err error) {
-	in.probe = in.Peek(8)
+	in.probe = append([]byte(nil), in.Peek(8)...)
 	version, err := in.ReadByte()
 	if err != nil {
 		return
@@ -170,11 +152,12 @@ func (out *VlessOutbound) Connect(targetAddr string) error {
 	header = append(header, out.id[:]...)
 	header = append(header, 0) // addons: empty
 	header = append(header, CmdTCP)
-	writer := addressWriter{w: &header}
-	if err := common.EncodeTarget(writer, targetAddr, common.TargetCodingVless); err != nil {
+	address, err := common.EncodeTarget(targetAddr, common.TargetCodingVless)
+	if err != nil {
 		return err
 	}
-	_, err := out.Write(header)
+	header = append(header, address...)
+	_, err = out.Write(header)
 	if err == nil {
 		out.noSkipResp = true
 	}
@@ -206,13 +189,4 @@ func (out *VlessOutbound) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return out.Buffered.Read(p)
-}
-
-// WriteTo must be redefined: the promoted Buffered.WriteTo would let
-// io.Copy splice straight from the socket and leak the response header.
-func (out *VlessOutbound) WriteTo(w io.Writer) (int64, error) {
-	if err := out.skipResp(); err != nil {
-		return 0, err
-	}
-	return out.Buffered.WriteTo(w)
 }

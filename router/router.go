@@ -43,28 +43,31 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router) {
 	keywords := make([]string, 0)
 	regexStrings := make([]string, 0)
 
-	// named lists reference each other with include entries (dlc categories
-	// and compound lists), so expand them recursively. seen guards cycles.
-	var appendEntries func(entries []Entry, seen map[string]bool)
-	appendEntries = func(entries []Entry, seen map[string]bool) {
-		for _, entry := range entries {
-			switch RuleType(entry.Type) {
-			case FULL:
-				fullDomains = append(fullDomains, entry.Value)
-			case DOMAIN:
-				domains = append(domains, entry.Value)
-			case KEYWORD:
-				keywords = append(keywords, entry.Value)
-			case REGEXP:
-				regexStrings = append(regexStrings, entry.Value)
-			case INCLUDE:
-				name := strings.ToUpper(entry.Value)
-				if seen[name] {
-					continue
-				}
-				seen[name] = true
-				if sub, exist := allRules[name]; exist && sub != nil {
-					appendEntries(sub.Entry, seen)
+	// add stores one entry under its rule type. include entries are expanded
+	// only inside a named list (expand true); seen guards cycles between lists.
+	var add func(entry Entry, seen map[string]bool, expand bool)
+	add = func(entry Entry, seen map[string]bool, expand bool) {
+		switch RuleType(entry.Type) {
+		case FULL:
+			fullDomains = append(fullDomains, entry.Value)
+		case DOMAIN:
+			domains = append(domains, entry.Value)
+		case KEYWORD:
+			keywords = append(keywords, entry.Value)
+		case REGEXP:
+			regexStrings = append(regexStrings, entry.Value)
+		case INCLUDE:
+			if !expand {
+				return
+			}
+			name := strings.ToUpper(entry.Value)
+			if seen[name] {
+				return
+			}
+			seen[name] = true
+			if sub, exist := allRules[name]; exist && sub != nil {
+				for _, e := range sub.Entry {
+					add(e, seen, true)
 				}
 			}
 		}
@@ -72,36 +75,32 @@ func NewRouter(tag string, rules []string, routerPath string) (router *Router) {
 
 	for _, rule := range rules {
 		ruleType, ruleStr := RULE, rule
-		kv := strings.Split(rule, ":")
-		if len(kv) > 1 {
+		if kv := strings.SplitN(rule, ":", 2); len(kv) > 1 {
 			ruleType, ruleStr = RuleType(kv[0]), kv[1]
 		}
 		switch ruleType {
-		case FULL: // "full:string"
-			fullDomains = append(fullDomains, ruleStr)
-		case DOMAIN: // "domain:string"
-			domains = append(domains, ruleStr)
-		case KEYWORD: // "keyword:string"
-			keywords = append(keywords, ruleStr)
-		case REGEXP: // "regex:string"
-			regexStrings = append(regexStrings, ruleStr)
+		case FULL, DOMAIN, KEYWORD, REGEXP:
+			add(Entry{Type: string(ruleType), Value: ruleStr}, nil, false)
 		default: // "rule:string" || "string"
 			ruleList, exist := allRules[strings.ToUpper(ruleStr)]
 			if !exist || ruleList == nil {
 				break
 			}
-			appendEntries(ruleList.Entry, map[string]bool{strings.ToUpper(ruleStr): true})
+			add(Entry{Type: string(INCLUDE), Value: ruleStr},
+				map[string]bool{}, true)
 		}
 	}
+
 	router = &Router{
-		Tag:      tag,
-		matchers: make([]Matcher, 0),
+		Tag: tag,
+		matchers: []Matcher{ // cheapest first; regexp last
+			NewFullMatcher(fullDomains),
+			NewDomainMatcher(domains),
+			NewKeywordMatcher(keywords),
+			NewRegexMatcher(regexStrings),
+		},
 	}
 	logger.Infof("router %s: %d rules from %d named lists", tag,
 		len(fullDomains)+len(regexStrings)+len(domains)+len(keywords), len(allRules))
-	router.matchers = append(router.matchers, NewFullMatcher(fullDomains))
-	router.matchers = append(router.matchers, NewRegexMatcher(regexStrings))
-	router.matchers = append(router.matchers, NewDomainMatcher(domains))
-	router.matchers = append(router.matchers, NewKeywordMatcher(keywords))
 	return
 }

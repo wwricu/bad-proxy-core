@@ -25,9 +25,8 @@ freedom outbound).
 */
 
 type HttpRequest struct {
-	Method         string
-	Address        string
-	originFormLine string
+	Method  string
+	Address string
 }
 
 const maxHttpHeadBytes = 16 * 1024
@@ -38,8 +37,6 @@ func readRequestHead(in *common.Buffered) (HttpRequest, []byte, error) {
 	if err != nil {
 		return HttpRequest{}, nil, err
 	}
-	raw.WriteString(line)
-	raw.WriteString("\r\n")
 	parts := strings.SplitN(line, " ", 3)
 	if len(parts) != 3 {
 		return HttpRequest{}, nil, errors.New("malformed request line: " + line)
@@ -48,7 +45,9 @@ func readRequestHead(in *common.Buffered) (HttpRequest, []byte, error) {
 	if request.Address, err = targetFromRequestUri(parts[1], parts[0]); err != nil {
 		return HttpRequest{}, nil, err
 	}
-	request.originFormLine = strings.Join([]string{parts[0], originFormTarget(parts[1]), parts[2]}, " ")
+	// the origin server must receive an origin-form request line (RFC 7230 5.4)
+	raw.WriteString(parts[0] + " " + originFormTarget(parts[1]) + " " + parts[2])
+	raw.WriteString("\r\n")
 	// drain the remaining header lines
 	for {
 		l, err := readCrlfLine(in, maxHttpHeadBytes)
@@ -174,25 +173,10 @@ func (in *HttpInbound) Connect() (targetAddr string, err error) {
 		}
 		return request.Address, nil
 	}
-	// Plain proxy request: the origin server expects an origin-form request
-	// line (path only), so rewrite the head and re-inject it into the stream
+	// Plain proxy request: re-inject the head, already rewritten to origin form,
 	// ahead of the body we have not read yet.
-	rewritten := originFormHead(rawHead, request.originFormLine)
-	in.PushFront(rewritten)
+	in.PushFront(rawHead)
 	return request.Address, nil
-}
-
-// originFormHead replaces the request line inside the raw head with its
-// origin-form version, leaving the headers and CRLF terminator untouched.
-func originFormHead(rawHead []byte, originLine string) []byte {
-	end := bytes.Index(rawHead, []byte("\r\n"))
-	if end < 0 {
-		return rawHead
-	}
-	out := make([]byte, 0, len(rawHead))
-	out = append(out, originLine...)
-	out = append(out, rawHead[end:]...)
-	return out
 }
 
 func (in *HttpInbound) Fallback() {}

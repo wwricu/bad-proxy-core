@@ -128,45 +128,6 @@ func (b *Buffered) ReadUint16() (uint16, error) {
 	return binary.BigEndian.Uint16(p), nil
 }
 
-// WriteTo flushes bytes retained by the handshake buffer, then splices or
-// copies the rest of the stream. io.Copy picks this up so buffered bytes are
-// never lost and large transfers avoid the extra copy.
-func (b *Buffered) WriteTo(w io.Writer) (int64, error) {
-	var written int64
-	if len(b.pending) > 0 {
-		c, err := w.Write(b.pending)
-		written += int64(c)
-		b.pending = b.pending[c:]
-		if err != nil || len(b.pending) > 0 {
-			return written, err
-		}
-	}
-	if n := b.r.Buffered(); n > 0 {
-		p, _ := b.r.Peek(n)
-		c, err := w.Write(p)
-		written += int64(c)
-		if err != nil {
-			return written, err
-		}
-		if _, err = b.r.Discard(c); err != nil {
-			return written, err
-		}
-	}
-	if wt, ok := b.Conn.(io.WriterTo); ok {
-		n, err := wt.WriteTo(w)
-		return written + n, err
-	}
-	n, err := io.Copy(w, b.Conn)
-	return written + n, err
-}
-
-func (b *Buffered) ReadFrom(r io.Reader) (int64, error) {
-	if rf, ok := b.Conn.(io.ReaderFrom); ok {
-		return rf.ReadFrom(r)
-	}
-	return io.Copy(b.Conn, r)
-}
-
 // DecodeTarget reads a SOCKS/VLESS/Trojan style address (atyp included)
 // and returns "host:port", interpreting atyp through the given coding.
 func (b *Buffered) DecodeTarget(c targetCoding) (string, error) {
@@ -177,7 +138,7 @@ func (b *Buffered) DecodeTarget(c targetCoding) (string, error) {
 			return "", err
 		}
 	}
-	atyp, err := b.r.ReadByte()
+	atyp, err := b.ReadByte()
 	if err != nil {
 		return "", err
 	}
@@ -196,7 +157,7 @@ func (b *Buffered) DecodeTarget(c targetCoding) (string, error) {
 		}
 		host = net.IP(p).String()
 	case c.domain:
-		length, err := b.r.ReadByte()
+		length, err := b.ReadByte()
 		if err != nil {
 			return "", err
 		}
@@ -218,21 +179,21 @@ func (b *Buffered) DecodeTarget(c targetCoding) (string, error) {
 	return net.JoinHostPort(host, strconv.Itoa(int(port))), nil
 }
 
-// EncodeTarget writes a SOCKS/VLESS/Trojan style address, atyp included.
-func EncodeTarget(w io.Writer, address string, c targetCoding) error {
+// EncodeTarget returns a SOCKS/VLESS/Trojan style address, atyp included.
+func EncodeTarget(address string, c targetCoding) ([]byte, error) {
 	host, portStr, err := net.SplitHostPort(address)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	port, err := strconv.ParseUint(portStr, 10, 16)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var atyp byte
 	var body []byte
 	if ip := net.ParseIP(host); ip == nil {
 		if len(host) > maxDomainLen {
-			return errors.New("domain too long")
+			return nil, errors.New("domain too long")
 		}
 		atyp = c.domain
 		body = append([]byte{byte(len(host))}, host...)
@@ -243,16 +204,15 @@ func EncodeTarget(w io.Writer, address string, c targetCoding) error {
 		atyp = c.ipv6
 		body = ip.To16()
 	}
-	var header []byte
+	var out []byte
 	if c.portFirst {
-		header = []byte{byte(port >> 8), byte(port), atyp}
+		out = []byte{byte(port >> 8), byte(port), atyp}
 	} else {
-		header = []byte{atyp}
+		out = []byte{atyp}
 	}
-	header = append(header, body...)
+	out = append(out, body...)
 	if !c.portFirst {
-		header = append(header, byte(port>>8), byte(port))
+		out = append(out, byte(port>>8), byte(port))
 	}
-	_, err = w.Write(header)
-	return err
+	return out, nil
 }
