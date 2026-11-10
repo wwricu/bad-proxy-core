@@ -60,6 +60,8 @@ import (
 )
 
 const (
+	// The protocol does not need a content type, but leaving the stream
+	// untyped makes it look like a bare 200.
 	xhttpContentType = "application/octet-stream"
 
 	// PaddingParam is where the filler travels: a query parameter on every

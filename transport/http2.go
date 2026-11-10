@@ -36,10 +36,6 @@ import (
 )
 
 const (
-	// h2ContentType is what the response body carries. The protocol does not
-	// need it, but leaving the stream untyped makes it look like a bare 200.
-	h2ContentType = "application/octet-stream"
-
 	// maxHttp2Tunnels caps the requests an unauthenticated peer may hold at
 	// once. Every tunnel is a stream, a goroutine and a relay before any
 	// credential is checked; without the cap a peer opens them until memory is
@@ -253,7 +249,7 @@ func (l *http2Listener) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", h2ContentType)
+	w.Header().Set("Content-Type", xhttpContentType)
 	w.WriteHeader(http.StatusOK)
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
