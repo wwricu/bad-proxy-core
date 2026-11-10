@@ -45,7 +45,6 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -187,86 +186,6 @@ func (t xhttpTransport) newTunnelRequest(ctx context.Context, method, url string
 	return req, nil
 }
 
-func (t xhttpTransport) dialStreamOne() (net.Conn, error) {
-	url, err := t.tunnelURL("", -1)
-	if err != nil {
-		return nil, err
-	}
-
-	pr, pw := io.Pipe()
-	ctx, cancel := context.WithCancel(context.Background())
-	req, err := t.newTunnelRequest(ctx, http.MethodPost, url, pr)
-	if err != nil {
-		cancel()
-		pw.Close()
-		return nil, err
-	}
-
-	tr := t.flowTransport()     // the split-flow modes' client transport: one source for its budgets
-	tr.DisableKeepAlives = true // one request, one connection: it goes away with the tunnel
-
-	respCh, errCh := startFlow(tr, req, pw.CloseWithError)
-
-	conn := &XhttpConn{writer: pw, remote: parseAddr(t.address)}
-	conn.reader = &lazyBody{
-		respCh: respCh,
-		errCh:  errCh,
-		name:   "xhttp",
-		// A rejected request has to unblock the handshake write parked on the
-		// pipe, or the tunnel dies with a timeout instead of an error.
-		onFail: func(error) { conn.Close() },
-	}
-	conn.onClose = func() {
-		pw.Close()
-		cancel()
-		tr.CloseIdleConnections()
-	}
-	return conn, nil
-}
-
-// lazyBody waits for the HTTP response (which only arrives once the request
-// body has started flowing) and then reads from it. A status other than 200 is
-// surfaced as a read error and tears the tunnel down, so a request the front
-// rejected fails on the first read instead of hanging the handshake.
-type lazyBody struct {
-	respCh chan *http.Response
-	errCh  chan error
-	name   string // protocol name for error messages
-	// wantProtoMajor rejects a response that did not negotiate the protocol the
-	// transport is named after; zero accepts whatever came back.
-	wantProtoMajor int
-	onFail         func(error)
-
-	resp  *http.Response
-	err   error
-	ready bool
-}
-
-func (l *lazyBody) Read(p []byte) (int, error) {
-	if !l.ready {
-		select {
-		case l.resp = <-l.respCh:
-			if l.resp.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(io.LimitReader(l.resp.Body, 512))
-				_ = l.resp.Body.Close()
-				l.err = fmt.Errorf("%s: server answered %d: %s", l.name, l.resp.StatusCode, string(body))
-				l.onFail(l.err)
-			} else if l.wantProtoMajor != 0 && l.resp.ProtoMajor != l.wantProtoMajor {
-				_ = l.resp.Body.Close()
-				l.err = fmt.Errorf("%s: front answered %s, want HTTP/%d", l.name, l.resp.Proto, l.wantProtoMajor)
-				l.onFail(l.err)
-			}
-		case l.err = <-l.errCh:
-			// The RoundTrip goroutine already closed the pipe writer.
-		}
-		l.ready = true
-	}
-	if l.err != nil {
-		return 0, l.err
-	}
-	return l.resp.Body.Read(p)
-}
-
 // ---------------------------------------------------------------- server
 
 type XhttpListener struct {
@@ -403,55 +322,6 @@ func xhttpAnswers(mode string, method string, depth int) bool {
 	return depth <= 2
 }
 
-func (listener *XhttpListener) serveStreamOne(w http.ResponseWriter, r *http.Request) {
-	rc := http.NewResponseController(w)
-	// Clear any server-inherited deadlines: tunnels must survive idle keep
-	// alive, the nginx guide covers the matching proxy_*_timeout settings.
-	_ = rc.SetReadDeadline(time.Time{})
-	_ = rc.SetWriteDeadline(time.Time{})
-	// Without this, net/http consumes and closes the request body as soon as
-	// the handler starts writing the response header, which kills the duplex
-	// stream whenever the first upload chunk is small (Content-Length case).
-	if err := rc.EnableFullDuplex(); err != nil {
-		logger.Warnf("xhttp: full duplex unavailable: %v", err)
-	}
-
-	done := make(chan struct{})
-	var once sync.Once
-	closeDone := func() { once.Do(func() { close(done) }) }
-
-	conn := &XhttpConn{reader: r.Body, writer: w, flush: true, remote: parseAddr(r.RemoteAddr)}
-	conn.setRead = rc.SetReadDeadline
-	conn.setWrite = rc.SetWriteDeadline
-	conn.onClose = func() {
-		closeDone()
-		// unblock a relay Read parked on the request body
-		_ = rc.SetReadDeadline(time.Now())
-	}
-
-	w.Header().Set("Content-Type", xhttpContentType)
-	w.WriteHeader(http.StatusOK)
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
-
-	select {
-	case listener.ch <- conn:
-	case <-r.Context().Done():
-		return
-	case <-listener.closed:
-		return
-	}
-	<-done // relay closed the tunnel (or peer vanished)
-	// Drain the upload before returning. Closing on top of a body the client is
-	// still streaming sends a reset, and a reset throws away the response bytes
-	// the client has not read yet, so the tail of the download would go missing
-	// on every tunnel that ends while its peer is still writing. Bounded, because
-	// a client that likes the tunnel will keep streaming forever.
-	_ = rc.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, _ = io.Copy(io.Discard, r.Body)
-}
-
 func (listener *XhttpListener) Accept() (net.Conn, error) {
 	select {
 	case <-listener.closed:
@@ -473,124 +343,6 @@ func (listener *XhttpListener) Close() error {
 }
 
 func (listener *XhttpListener) Addr() net.Addr { return listener.addr }
-
-// session returns the tunnel for sid, starting one if this is the first of its
-// requests. Whichever flow arrives first is the one that hands the connection to
-// Accept, so a client that posts before it opens its download is not stalled.
-// The cap applies to new ids only: an existing tunnel keeps its session when
-// the map is full, or an upload arriving after a burst would kill it.
-func (listener *XhttpListener) session(sid string, remote net.Addr) (*xhttpSession, error) {
-	listener.mu.Lock()
-	defer listener.mu.Unlock()
-	if s, ok := listener.sessions[sid]; ok {
-		return s, nil
-	}
-	if len(listener.sessions) >= listener.maxSessions {
-		return nil, fmt.Errorf("xhttp: session cap %d reached", listener.maxSessions)
-	}
-	s := newXhttpSession(sid, remote, listener)
-	listener.sessions[sid] = s
-	go func() {
-		select {
-		case listener.ch <- s:
-		case <-s.done:
-		case <-listener.closed:
-			s.close()
-		}
-	}()
-	go s.reap()
-	return s, nil
-}
-
-func (listener *XhttpListener) forget(sid string) {
-	listener.mu.Lock()
-	defer listener.mu.Unlock()
-	delete(listener.sessions, sid)
-}
-
-// dropSessions tears every split-flow tunnel down. Closing one wants the map
-// lock to remove itself, so the list is taken first and closed outside it.
-func (listener *XhttpListener) dropSessions() {
-	listener.mu.Lock()
-	pending := make([]*xhttpSession, 0, len(listener.sessions))
-	for _, s := range listener.sessions {
-		pending = append(pending, s)
-	}
-	listener.sessions = make(map[string]*xhttpSession)
-	listener.mu.Unlock()
-	for _, s := range pending {
-		s.close()
-	}
-}
-
-// ---------------------------------------------------------------- shared conn
-
-// XhttpConn adapts one duplex HTTP POST (request body up, response body down)
-// to net.Conn. The session modes use xhttpSession instead, which carries the
-// same shape.
-type XhttpConn struct {
-	reader  io.Reader
-	writer  io.Writer
-	onClose func()
-	flush   bool
-	remote  net.Addr
-
-	// deadline hooks, populated only where the underlying HTTP machinery can
-	// enforce them (the server side, via the ResponseController). They let the
-	// core's handshake timeout bound a stalled request body read; the client's
-	// response wait is bounded by ResponseHeaderTimeout instead, so these stay
-	// nil there and the deadline calls are inert no-ops.
-	setRead  func(time.Time) error
-	setWrite func(time.Time) error
-
-	closeOnce sync.Once
-}
-
-func (c *XhttpConn) Read(b []byte) (int, error) { return c.reader.Read(b) }
-
-func (c *XhttpConn) Write(b []byte) (int, error) {
-	n, err := c.writer.Write(b)
-	if err == nil && c.flush {
-		if f, ok := c.writer.(http.Flusher); ok {
-			f.Flush()
-		}
-	}
-	return n, err
-}
-
-func (c *XhttpConn) Close() error {
-	c.closeOnce.Do(func() {
-		if c.onClose != nil {
-			c.onClose()
-		}
-	})
-	return nil
-}
-
-func (c *XhttpConn) LocalAddr() net.Addr  { return c.remote }
-func (c *XhttpConn) RemoteAddr() net.Addr { return c.remote }
-
-func (c *XhttpConn) SetDeadline(t time.Time) error {
-	errR, errW := c.SetReadDeadline(t), c.SetWriteDeadline(t)
-	if errR != nil {
-		return errR
-	}
-	return errW
-}
-
-func (c *XhttpConn) SetReadDeadline(t time.Time) error {
-	if c.setRead == nil {
-		return nil
-	}
-	return c.setRead(t)
-}
-
-func (c *XhttpConn) SetWriteDeadline(t time.Time) error {
-	if c.setWrite == nil {
-		return nil
-	}
-	return c.setWrite(t)
-}
 
 // ---------------------------------------------------------------- helpers
 
