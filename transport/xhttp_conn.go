@@ -23,7 +23,7 @@ const (
 // the stdlib multiplexes them over a single HTTP/2 connection by ALPN; over
 // plain TCP each flow takes its own connection, which is why idle connections
 // must not be evicted after one use.
-func (t xhttpTransport) flowTransport() *http.Transport {
+func (t xhttpEndpoint) flowTransport() *http.Transport {
 	return &http.Transport{
 		ForceAttemptHTTP2:   true,
 		TLSClientConfig:     clientTlsConfig(t.address, t.authority),

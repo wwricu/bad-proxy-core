@@ -10,7 +10,15 @@ import (
 	"github.com/wwricu/bad-proxy-core/logger"
 )
 
-func (t xhttpTransport) dialStreamUp() (net.Conn, error) {
+// streamUpTransport spreads the tunnel over two flows to one URL: a GET for
+// the download and one endless POST body for the upload.
+type streamUpTransport struct{ xhttpEndpoint }
+
+func (t streamUpTransport) Listen() (net.Listener, error) {
+	return t.listen(func(_ string, depth int) bool { return depth == 1 })
+}
+
+func (t streamUpTransport) Dial() (net.Conn, error) {
 	sid := randomHex(8)
 	// Both flows go to the same URL: the path plus the session id, as a GET for
 	// the download and a POST for the upload.

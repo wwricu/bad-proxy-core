@@ -105,38 +105,77 @@ func ResolveXhttpMode(mode string) string {
 	return ""
 }
 
-// xhttpTransport is the whole xhttp endpoint: the address and path every
-// request goes to, the mode that picks which requests a tunnel makes, and the
-// TLS material. Padding is not among these fields: how much filler a request
-// carries is a property of the transport, not a choice an endpoint makes, so
-// it comes from common.DefaultPadding and no caller can set it.
-type xhttpTransport struct {
+// xhttpEndpoint is the config every xhttp mode shares: the address and path
+// every request goes to and the TLS material. The mode is not a field - it is
+// the concrete Transport wrapping this endpoint (streamOneTransport,
+// streamUpTransport, packetUpTransport), picked once by newXhttp. Padding is
+// not here either: how much filler a request carries is a property of the
+// transport, not a choice an endpoint makes, so it comes from
+// common.DefaultPadding and no caller can set it.
+type xhttpEndpoint struct {
 	address   string
 	path      string
 	authority string // SNI / Host, empty means derive from the address host
-	mode      string // resolved: stream-one, stream-up or packet-up
 	useTLS    bool   // client only: https scheme + TLS config
 	certPath  string // server only
 	keyPath   string // server only
 	timeout   time.Duration
 }
 
-// ---------------------------------------------------------------- client
-
-func (t xhttpTransport) Dial() (net.Conn, error) {
-	switch t.mode {
-	case XhttpModeStreamUp:
-		return t.dialStreamUp()
-	case XhttpModeAuto, XhttpModePacketUp:
-		return t.dialPacketUp()
+// newXhttp resolves the mode once, at config time, so a typo is reported once
+// instead of on every tunnel this endpoint opens, and returns the one Transport
+// that speaks it.
+func newXhttp(o Options, timeout time.Duration) Transport {
+	endpoint := xhttpEndpoint{
+		address:   o.Address,
+		path:      o.Path,
+		authority: o.Authority,
+		useTLS:    o.UseTLS,
+		certPath:  o.TlsCertPath,
+		keyPath:   o.TlsKeyPath,
+		timeout:   timeout,
 	}
-	// unset, and stream-one: the curated default
-	return t.dialStreamOne()
+	switch ResolveXhttpMode(o.Mode) {
+	case XhttpModeStreamUp:
+		return streamUpTransport{endpoint}
+	case XhttpModePacketUp:
+		return packetUpTransport{endpoint}
+	case XhttpModeAuto:
+		return autoTransport{packetUpTransport{endpoint}}
+	case XhttpModeStreamOne:
+		return streamOneTransport{endpoint}
+	}
+	return defaultTransport{streamOneTransport{endpoint}}
 }
+
+// autoTransport is Xray's "auto": the client dials packet-up (inherited), and
+// the server answers every shape, because the mode is never sent on the wire
+// and an auto server exists to front whichever mode its clients speak.
+type autoTransport struct{ packetUpTransport }
+
+func (t autoTransport) Listen() (net.Listener, error) {
+	return t.listen(xhttpAnswersAny)
+}
+
+// defaultTransport is an unset mode, which is deliberately not Xray's auto:
+// the client dials stream-one (inherited), the one long-lived POST that
+// survives a buffering reverse proxy, while the server still answers every
+// shape so existing configs keep fronting any client.
+type defaultTransport struct{ streamOneTransport }
+
+func (t defaultTransport) Listen() (net.Listener, error) {
+	return t.listen(xhttpAnswersAny)
+}
+
+// xhttpAnswersAny accepts every request shape the transport can speak; the
+// GET/POST gate lives in serveHTTP, ahead of this.
+func xhttpAnswersAny(_ string, depth int) bool { return depth <= 2 }
+
+// ---------------------------------------------------------------- client
 
 // clientBase resolves the scheme and the Host/SNI authority, which is the
 // address host unless the endpoint names a different one.
-func (t xhttpTransport) clientBase() (string, string, error) {
+func (t xhttpEndpoint) clientBase() (string, string, error) {
 	authorityHost, _, err := net.SplitHostPort(t.address)
 	if err != nil {
 		return "", "", err
@@ -155,7 +194,7 @@ func (t xhttpTransport) clientBase() (string, string, error) {
 // tunnelURL builds one request URL for this tunnel. The path keeps its trailing
 // slash and a session appends its id, and then its sequence number, as further
 // segments - the same layout an Xray client puts on the wire.
-func (t xhttpTransport) tunnelURL(sid string, seq int) (string, error) {
+func (t xhttpEndpoint) tunnelURL(sid string, seq int) (string, error) {
 	scheme, authority, err := t.clientBase()
 	if err != nil {
 		return "", err
@@ -174,7 +213,7 @@ func (t xhttpTransport) tunnelURL(sid string, seq int) (string, error) {
 // query, redrawn per request so the request sizes never settle on one value,
 // and the body content type. Xray's server does not require the parameter, but
 // a request without it is a fixed-size giveaway.
-func (t xhttpTransport) newTunnelRequest(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
+func (t xhttpEndpoint) newTunnelRequest(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
@@ -189,8 +228,11 @@ func (t xhttpTransport) newTunnelRequest(ctx context.Context, method, url string
 // ---------------------------------------------------------------- server
 
 type XhttpListener struct {
-	path      string
-	mode      string
+	path string
+	// answers is the server half of the mode setting: since the mode is never
+	// sent, a pinned server answers only its mode's request shapes, which is the
+	// only thing pinning can usefully do. Each mode's Listen hands its own.
+	answers   func(method string, depth int) bool
 	addr      net.Addr
 	ch        chan net.Conn
 	server    *http.Server
@@ -206,10 +248,12 @@ type XhttpListener struct {
 	maxSessions int
 }
 
-func (t xhttpTransport) Listen() (net.Listener, error) {
+// listen builds the one listener skeleton every mode shares; only the answers
+// predicate differs, so it is the mode's whole server-side configuration.
+func (t xhttpEndpoint) listen(answers func(method string, depth int) bool) (net.Listener, error) {
 	listener := &XhttpListener{
 		path:        xhttpPath(t.path),
-		mode:        t.mode,
+		answers:     answers,
 		addr:        parseAddr(t.address),
 		ch:          make(chan net.Conn, 32),
 		closed:      make(chan struct{}),
@@ -270,7 +314,7 @@ func (t xhttpTransport) Listen() (net.Listener, error) {
 // tunnel's presence.
 func (listener *XhttpListener) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	segs, ok := xhttpSegments(listener.path, r.URL.Path)
-	if !ok || !xhttpAnswers(listener.mode, r.Method, len(segs)) {
+	if !ok || (r.Method != http.MethodGet && r.Method != http.MethodPost) || !listener.answers(r.Method, len(segs)) {
 		refuse(w, http.StatusNotFound)
 		return
 	}
@@ -301,25 +345,6 @@ func (listener *XhttpListener) serveHTTP(w http.ResponseWriter, r *http.Request)
 func refuse(w http.ResponseWriter, code int) {
 	w.Header().Set("Connection", "close")
 	w.WriteHeader(code)
-}
-
-// xhttpAnswers is the server half of the mode setting. Since the mode is never
-// sent, "auto" (and an unset mode) accepts every shape the transport can speak;
-// a server pinned to one mode answers only that mode's requests, which is the
-// only thing pinning can usefully do.
-func xhttpAnswers(mode string, method string, depth int) bool {
-	if method != http.MethodGet && method != http.MethodPost {
-		return false
-	}
-	switch mode {
-	case XhttpModeStreamOne:
-		return depth == 0 && method == http.MethodPost
-	case XhttpModeStreamUp:
-		return depth == 1
-	case XhttpModePacketUp:
-		return (depth == 1 && method == http.MethodGet) || (depth == 2 && method == http.MethodPost)
-	}
-	return depth <= 2
 }
 
 func (listener *XhttpListener) Accept() (net.Conn, error) {

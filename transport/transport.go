@@ -62,18 +62,7 @@ func New(protocol string, o Options) Transport {
 			timeout:    timeout,
 		}
 	case "xhttp":
-		return xhttpTransport{
-			address:   o.Address,
-			path:      o.Path,
-			authority: o.Authority,
-			// resolved once here, at config time, so a typo is reported once
-			// instead of on every tunnel this endpoint opens.
-			mode:     ResolveXhttpMode(o.Mode),
-			useTLS:   o.UseTLS,
-			certPath: o.TlsCertPath,
-			keyPath:  o.TlsKeyPath,
-			timeout:  timeout,
-		}
+		return newXhttp(o, timeout)
 	case "http2":
 		return http2Transport{
 			address:   o.Address,

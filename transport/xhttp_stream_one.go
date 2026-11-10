@@ -11,7 +11,17 @@ import (
 	"github.com/wwricu/bad-proxy-core/logger"
 )
 
-func (t xhttpTransport) dialStreamOne() (net.Conn, error) {
+// streamOneTransport carries the tunnel as one duplex POST: the request body
+// is the uplink and the streamed 200 response the downlink.
+type streamOneTransport struct{ xhttpEndpoint }
+
+func (t streamOneTransport) Listen() (net.Listener, error) {
+	return t.listen(func(method string, depth int) bool {
+		return depth == 0 && method == http.MethodPost
+	})
+}
+
+func (t streamOneTransport) Dial() (net.Conn, error) {
 	url, err := t.tunnelURL("", -1)
 	if err != nil {
 		return nil, err

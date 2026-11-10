@@ -358,7 +358,7 @@ func TestXhttpGates(t *testing.T) {
 		{"/xrt/cccccccccccccccc/one?x_padding=XXXXXXXXXXXXXXXXXXXXXXXX", http.StatusBadRequest},
 	}
 	for _, c := range cases {
-		got, _ := rawPathOnly(t, addr, c.path)
+		got := rawPathOnly(t, addr, http.MethodPost, c.path)
 		if got != c.want {
 			t.Errorf("path %q: status %d, want %d", c.path, got, c.want)
 		}
@@ -555,53 +555,88 @@ func rawXhttpDownload(t *testing.T, addr, path string) []byte {
 	return body
 }
 
-func rawPathOnly(t *testing.T, addr, path string) (int, string) {
+// rawPathOnly probes one request shape and reads just the status: a 200 tunnel
+// body stays open until the peer closes, and closing here is what tears the
+// handler down. The gates are checked before the body means anything, so a
+// short body with no tunnel behind it must still produce the right status.
+func rawPathOnly(t *testing.T, addr, method, path string) int {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, "http://"+addr+path, strings.NewReader("ping"))
+	req, err := http.NewRequest(method, "http://"+addr+path, strings.NewReader("ping"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The gates are checked before the body means anything, so a short body with
-	// no tunnel behind it must still produce the right status.
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("%q: %v", path, err)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 128))
-	return resp.StatusCode, string(body)
+	_ = resp.Body.Close()
+	return resp.StatusCode
 }
 
-// xhttpAnswers is the request-shape table behind the mode restriction: depth is
-// how many segments follow the tunnel path, which is the only thing a server can
-// read a mode off.
+// The request-shape table behind the mode restriction, driven through a real
+// listener: depth is how many segments follow the tunnel path, which is the
+// only thing a server can read a mode off.
 func TestXhttpAnswers(t *testing.T) {
-	type want struct {
-		mode   string
+	type shape struct {
 		method string
 		depth  int
 		ok     bool
 	}
-	for _, c := range []want{
-		{XhttpModeAuto, http.MethodPost, 0, true},
-		{XhttpModeAuto, http.MethodGet, 1, true},
-		{XhttpModeAuto, http.MethodPost, 1, true},
-		{XhttpModeAuto, http.MethodPost, 2, true},
-		{XhttpModeAuto, http.MethodPost, 3, false},
-		{XhttpModeStreamOne, http.MethodPost, 0, true},
-		{XhttpModeStreamOne, http.MethodGet, 1, false},
-		{XhttpModeStreamUp, http.MethodGet, 1, true},
-		{XhttpModeStreamUp, http.MethodPost, 1, true},
-		{XhttpModeStreamUp, http.MethodPost, 0, false},
-		{XhttpModePacketUp, http.MethodGet, 1, true},
-		{XhttpModePacketUp, http.MethodPost, 2, true},
-		{XhttpModePacketUp, http.MethodPost, 1, false},
-		{XhttpModeStreamOne, http.MethodDelete, 0, false},
-	} {
-		if got := xhttpAnswers(c.mode, c.method, c.depth); got != c.ok {
-			t.Errorf("%s %s depth %d: answered %v, want %v", c.mode, c.method, c.depth, got, c.ok)
-		}
+	tables := map[string][]shape{
+		XhttpModeAuto: {
+			{http.MethodPost, 0, true},
+			{http.MethodGet, 0, true},
+			{http.MethodGet, 1, true},
+			{http.MethodPost, 1, true},
+			{http.MethodPost, 2, true},
+			{http.MethodPost, 3, false},
+		},
+		XhttpModeStreamOne: {
+			{http.MethodPost, 0, true},
+			{http.MethodGet, 1, false},
+			{http.MethodDelete, 0, false},
+		},
+		XhttpModeStreamUp: {
+			{http.MethodGet, 1, true},
+			{http.MethodPost, 1, true},
+			{http.MethodPost, 0, false},
+		},
+		XhttpModePacketUp: {
+			{http.MethodGet, 1, true},
+			{http.MethodPost, 2, true},
+			{http.MethodPost, 1, false},
+		},
+	}
+	tables[""] = tables[XhttpModeAuto] // an unset server answers every shape too
+	for mode, shapes := range tables {
+		t.Run(xhttpModeName(mode), func(t *testing.T) {
+			addr := freeAddr(t)
+			listener, err := listenXhttp(Options{Address: addr, Path: "/xrt", Mode: mode})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			for _, c := range shapes {
+				path := "/xrt/"
+				if c.depth >= 1 {
+					path += "sid"
+				}
+				if c.depth >= 2 {
+					path += "/0"
+				}
+				if c.depth >= 3 {
+					path += "/1"
+				}
+				want := http.StatusNotFound
+				if c.ok {
+					want = http.StatusOK
+				}
+				if got := rawPathOnly(t, addr, c.method, path); got != want {
+					t.Errorf("%s %s depth %d: status %d, want %d", mode, c.method, c.depth, got, want)
+				}
+			}
+		})
 	}
 }
 
@@ -631,7 +666,7 @@ func TestPaddingLooksLikeXrays(t *testing.T) {
 // The tunnel's request context is the only thing that can cancel a connect in
 // progress; a bare net.Dial answered to nothing.
 func TestXhttpDialContextHonorsContext(t *testing.T) {
-	tr := xhttpTransport{address: "192.0.2.1:81", timeout: time.Second}.flowTransport()
+	tr := xhttpEndpoint{address: "192.0.2.1:81", timeout: time.Second}.flowTransport()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := tr.DialContext(ctx, "", ""); !errors.Is(err, context.Canceled) {
