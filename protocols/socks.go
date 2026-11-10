@@ -2,6 +2,7 @@ package protocols
 
 import (
 	"errors"
+	"fmt"
 	"net"
 
 	"github.com/wwricu/bad-proxy-core/common"
@@ -133,7 +134,7 @@ func (out *Socks5Outbound) Connect(targetAddr string) error {
 		return err
 	}
 	if reply[0] != socksVersion || reply[1] != socksRepSucceeded {
-		return errors.New("socks5 connect failed, rep " + string(rune('0'+reply[1])))
+		return fmt.Errorf("socks5 connect failed, rep %d", reply[1])
 	}
 	return nil
 }
