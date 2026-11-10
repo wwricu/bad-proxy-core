@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/wwricu/bad-proxy-core/logger"
@@ -146,10 +145,7 @@ func (proxy Proxy) proxy(in InboundConnect) {
 
 func (proxy Proxy) route(address string) Outbound {
 	tag := ""
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		host = strings.Split(address, ":")[0]
-	}
+	host, _, _ := net.SplitHostPort(address) // every inbound Connect yields a host:port
 	for _, r := range proxy.routers {
 		if r.MatchAny(host) {
 			tag = r.Tag
