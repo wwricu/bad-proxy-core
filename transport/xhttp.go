@@ -203,24 +203,7 @@ func (t xhttpTransport) dialStreamOne() (net.Conn, error) {
 	tr := t.flowTransport()     // the split-flow modes' client transport: one source for its budgets
 	tr.DisableKeepAlives = true // one request, one connection: it goes away with the tunnel
 
-	// Fire the request without blocking on the response. The server flushes its
-	// 200 before reading the body, but a buffering reverse proxy (Caddy) holds
-	// those response headers until the request body yields bytes -- and our
-	// caller only writes the handshake after Dial returns. Waiting here would
-	// deadlock the handshake against such a proxy, so resolve the response
-	// lazily on the first read and let the handshake flow immediately.
-	respCh := make(chan *http.Response, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		resp, err := tr.RoundTrip(req)
-		if err != nil {
-			// Unblock any handshake write already parked on the pipe.
-			pw.CloseWithError(err)
-			errCh <- err
-			return
-		}
-		respCh <- resp
-	}()
+	respCh, errCh := startFlow(tr, req, pw.CloseWithError)
 
 	conn := &XhttpConn{writer: pw, remote: parseAddr(t.address)}
 	conn.reader = &lazyBody{

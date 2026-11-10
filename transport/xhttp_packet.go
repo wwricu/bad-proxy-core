@@ -94,16 +94,21 @@ func (t xhttpTransport) flowTransport() *http.Transport {
 	}
 }
 
-// startFlow issues one request of a tunnel without waiting for its answer. The
-// download GET is only flushed once the server is talking and the upload POST
-// is only answered once the tunnel ends, so Dial must not block on either; the
-// two channels are how whoever needs the answer collects it later.
-func startFlow(tr *http.Transport, req *http.Request) (chan *http.Response, chan error) {
+// startFlow issues one request of a tunnel without waiting for its answer: a
+// buffering front holds the response headers until the request body yields
+// bytes, and the caller only writes the handshake after Dial returns, so Dial
+// must not block here; the two channels are how the answer is collected later.
+// onErr, when non-nil, runs before the error reaches errCh -- the duplex dials
+// pass pw.CloseWithError to unblock a handshake write parked on the pipe.
+func startFlow(tr *http.Transport, req *http.Request, onErr func(error) error) (chan *http.Response, chan error) {
 	respCh := make(chan *http.Response, 1)
 	errCh := make(chan error, 1)
 	go func() {
 		resp, err := tr.RoundTrip(req)
 		if err != nil {
+			if onErr != nil {
+				onErr(err)
+			}
 			errCh <- err
 			return
 		}
@@ -129,7 +134,7 @@ func (t xhttpTransport) dialStreamUp() (net.Conn, error) {
 		cancel()
 		return nil, err
 	}
-	downResp, downErr := startFlow(tr, req)
+	downResp, downErr := startFlow(tr, req, nil)
 
 	// The upload is one body that never ends until the tunnel closes, so the
 	// pipe is the conn's writer and nothing here waits for its answer.
@@ -140,7 +145,7 @@ func (t xhttpTransport) dialStreamUp() (net.Conn, error) {
 		pw.Close()
 		return nil, err
 	}
-	upResp, upErr := startFlow(tr, req)
+	upResp, upErr := startFlow(tr, req, nil)
 
 	conn := &XhttpConn{writer: pw, remote: parseAddr(t.address)}
 	down := &lazyBody{respCh: downResp, errCh: downErr, name: "xhttp"}
@@ -170,7 +175,7 @@ func (t xhttpTransport) dialPacketUp() (net.Conn, error) {
 		cancel()
 		return nil, err
 	}
-	downResp, downErr := startFlow(tr, req)
+	downResp, downErr := startFlow(tr, req, nil)
 
 	pieces := &packetWriter{window: make(chan struct{}, maxPiecesInFlight), dead: make(chan struct{})}
 	pieces.send = func(seq int, body io.Reader) (*http.Response, error) {

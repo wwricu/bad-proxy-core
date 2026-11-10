@@ -91,22 +91,7 @@ func (t http2Transport) Dial() (net.Conn, error) {
 
 	tr := t.clientTransport()
 
-	// The same lazy response the xhttp stream mode uses: the server flushes its
-	// 200 before reading the body, but a buffering front (Caddy) holds those
-	// headers until the body yields bytes, and the caller only writes the
-	// handshake after Dial returns. Resolving the response on the first read
-	// keeps the handshake from deadlocking against such a front.
-	respCh := make(chan *http.Response, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		resp, err := tr.RoundTrip(req)
-		if err != nil {
-			pw.CloseWithError(err)
-			errCh <- err
-			return
-		}
-		respCh <- resp
-	}()
+	respCh, errCh := startFlow(tr, req, pw.CloseWithError)
 
 	conn := &XhttpConn{writer: pw, remote: parseAddr(t.address)}
 	conn.reader = &lazyBody{
