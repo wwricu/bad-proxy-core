@@ -133,9 +133,8 @@ func (in *VlessInbound) Fallback() {
 // data, strips that response lazily on the first read.
 type VlessOutbound struct {
 	*common.Buffered
-	id VlessUser
-	// noSkipResp guards the lazy two-byte response skip below
-	noSkipResp bool
+	id          VlessUser
+	respPending bool
 }
 
 func NewVlessOutbound(conn net.Conn, id string) (*VlessOutbound, error) {
@@ -159,7 +158,7 @@ func (out *VlessOutbound) Connect(targetAddr string) error {
 	header = append(header, address...)
 	_, err = out.Write(header)
 	if err == nil {
-		out.noSkipResp = true
+		out.respPending = true
 	}
 	return err
 }
@@ -167,7 +166,7 @@ func (out *VlessOutbound) Connect(targetAddr string) error {
 // skipResp strips the deferred VLESS response header from the first
 // downstream bytes of the tunnel.
 func (out *VlessOutbound) skipResp() error {
-	if !out.noSkipResp {
+	if !out.respPending {
 		return nil
 	}
 	var resp [2]byte
@@ -180,7 +179,7 @@ func (out *VlessOutbound) skipResp() error {
 	if resp[1] != 0 {
 		return ErrNoStreamUpgrade // server announced protobuf addons (vision)
 	}
-	out.noSkipResp = false
+	out.respPending = false
 	return nil
 }
 
