@@ -11,8 +11,7 @@ import (
 	"github.com/wwricu/bad-proxy-core/logger"
 )
 
-// streamOneTransport carries the tunnel as one duplex POST: the request body
-// is the uplink and the streamed 200 response the downlink.
+// streamOneTransport carries the tunnel as one duplex POST: body up, streamed 200 down.
 type streamOneTransport struct{ xhttpEndpoint }
 
 func (t streamOneTransport) Listen() (net.Listener, error) {
@@ -36,7 +35,7 @@ func (t streamOneTransport) Dial() (net.Conn, error) {
 		return nil, err
 	}
 
-	tr := t.flowTransport()     // the split-flow modes' client transport: one source for its budgets
+	tr := t.flowTransport()     // shared client transport: one source for the budgets
 	tr.DisableKeepAlives = true // one request, one connection: it goes away with the tunnel
 
 	respCh, errCh := startFlow(tr, req, pw.CloseWithError)
@@ -46,8 +45,7 @@ func (t streamOneTransport) Dial() (net.Conn, error) {
 		respCh: respCh,
 		errCh:  errCh,
 		name:   "xhttp",
-		// A rejected request has to unblock the handshake write parked on the
-		// pipe, or the tunnel dies with a timeout instead of an error.
+		// A rejected request must unblock the handshake write parked on the pipe.
 		onFail: func(error) { conn.Close() },
 	}
 	conn.onClose = func() {
@@ -60,13 +58,11 @@ func (t streamOneTransport) Dial() (net.Conn, error) {
 
 func (listener *XhttpListener) serveStreamOne(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
-	// Clear any server-inherited deadlines: tunnels must survive idle keep
-	// alive, the nginx guide covers the matching proxy_*_timeout settings.
+	// Clear server-inherited deadlines: tunnels must survive idle keep-alive.
 	_ = rc.SetReadDeadline(time.Time{})
 	_ = rc.SetWriteDeadline(time.Time{})
-	// Without this, net/http consumes and closes the request body as soon as
-	// the handler starts writing the response header, which kills the duplex
-	// stream whenever the first upload chunk is small (Content-Length case).
+	// Without this net/http closes the request body once the response header is
+	// written, killing the duplex stream when the first upload chunk is small.
 	if err := rc.EnableFullDuplex(); err != nil {
 		logger.Warnf("xhttp: full duplex unavailable: %v", err)
 	}
@@ -98,11 +94,9 @@ func (listener *XhttpListener) serveStreamOne(w http.ResponseWriter, r *http.Req
 		return
 	}
 	<-done // relay closed the tunnel (or peer vanished)
-	// Drain the upload before returning. Closing on top of a body the client is
-	// still streaming sends a reset, and a reset throws away the response bytes
-	// the client has not read yet, so the tail of the download would go missing
-	// on every tunnel that ends while its peer is still writing. Bounded, because
-	// a client that likes the tunnel will keep streaming forever.
+	// Drain the upload before returning: closing on a body the client is still
+	// streaming sends a reset that throws away unread response bytes, losing the
+	// download's tail. Bounded, since a happy client streams forever.
 	_ = rc.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, _ = io.Copy(io.Discard, r.Body)
 }

@@ -11,26 +11,23 @@ import (
 )
 
 const (
-	// responseHeaderTimeout is deliberately separate from the connect budget: a
-	// buffering reverse proxy may legitimately hold a response head until the
-	// upload body yields bytes, which takes longer than establishing the hop.
+	// responseHeaderTimeout is separate from the connect budget: a buffering
+	// proxy may hold a response head until the upload body yields bytes.
 	responseHeaderTimeout = 30 * time.Second
 )
 
 // ---------------------------------------------------------------- client
 
-// flowTransport is the connection pool one tunnel's requests share. Over TLS
-// the stdlib multiplexes them over a single HTTP/2 connection by ALPN; over
-// plain TCP each flow takes its own connection, which is why idle connections
-// must not be evicted after one use.
+// flowTransport is the pool one tunnel's requests share: over TLS the stdlib
+// multiplexes them over one HTTP/2 connection, over plain TCP each flow takes
+// its own, so idle connections must not be evicted after one use.
 func (t xhttpEndpoint) flowTransport() *http.Transport {
 	return &http.Transport{
 		ForceAttemptHTTP2:   true,
 		TLSClientConfig:     clientTlsConfig(t.address, t.authority),
 		TLSHandshakeTimeout: t.timeout,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			// The context is the tunnel's own way out: closing it cancels a
-			// connect that would otherwise keep dialing after the tunnel is gone.
+			// ctx is the tunnel's way out: closing it cancels a lingering connect.
 			return (&net.Dialer{Timeout: t.timeout}).DialContext(ctx, "tcp", t.address)
 		},
 		MaxIdleConnsPerHost:   maxPiecesInFlight,
@@ -38,12 +35,9 @@ func (t xhttpEndpoint) flowTransport() *http.Transport {
 	}
 }
 
-// startFlow issues one request of a tunnel without waiting for its answer: a
-// buffering front holds the response headers until the request body yields
-// bytes, and the caller only writes the handshake after Dial returns, so Dial
-// must not block here; the two channels are how the answer is collected later.
-// onErr, when non-nil, runs before the error reaches errCh -- the duplex dials
-// pass pw.CloseWithError to unblock a handshake write parked on the pipe.
+// startFlow issues one request without waiting for its answer, so Dial does not
+// block on a buffering front. onErr runs before the error reaches errCh: the
+// duplex dials pass pw.CloseWithError to unblock a handshake write on the pipe.
 func startFlow(tr *http.Transport, req *http.Request, onErr func(error) error) (chan *http.Response, chan error) {
 	respCh := make(chan *http.Response, 1)
 	errCh := make(chan error, 1)
@@ -61,16 +55,14 @@ func startFlow(tr *http.Transport, req *http.Request, onErr func(error) error) (
 	return respCh, errCh
 }
 
-// lazyBody waits for the HTTP response (which only arrives once the request
-// body has started flowing) and then reads from it. A status other than 200 is
-// surfaced as a read error and tears the tunnel down, so a request the front
-// rejected fails on the first read instead of hanging the handshake.
+// lazyBody waits for the response (which arrives only once the request body has
+// started flowing) then reads it. A non-200 becomes a read error that tears the
+// tunnel down, so a rejected request fails on the first read, not a hang.
 type lazyBody struct {
 	respCh chan *http.Response
 	errCh  chan error
 	name   string // protocol name for error messages
-	// wantProtoMajor rejects a response that did not negotiate the protocol the
-	// transport is named after; zero accepts whatever came back.
+	// wantProtoMajor rejects a response that negotiated the wrong protocol; 0 accepts any.
 	wantProtoMajor int
 	onFail         func(error)
 
@@ -106,9 +98,8 @@ func (l *lazyBody) Read(p []byte) (int, error) {
 
 // ---------------------------------------------------------------- shared conn
 
-// XhttpConn adapts one duplex HTTP POST (request body up, response body down)
-// to net.Conn. The session modes use xhttpSession instead, which carries the
-// same shape.
+// XhttpConn adapts one duplex HTTP POST (body up, response down) to net.Conn.
+// The split-flow modes use xhttpSession instead.
 type XhttpConn struct {
 	reader  io.Reader
 	writer  io.Writer
@@ -116,11 +107,9 @@ type XhttpConn struct {
 	flush   bool
 	remote  net.Addr
 
-	// deadline hooks, populated only where the underlying HTTP machinery can
-	// enforce them (the server side, via the ResponseController). They let the
-	// core's handshake timeout bound a stalled request body read; the client's
-	// response wait is bounded by ResponseHeaderTimeout instead, so these stay
-	// nil there and the deadline calls are inert no-ops.
+	// deadline hooks, set only server-side (via ResponseController) to bound a
+	// stalled body read. The client's wait is bounded by ResponseHeaderTimeout,
+	// so these stay nil there and the deadline calls are no-ops.
 	setRead  func(time.Time) error
 	setWrite func(time.Time) error
 
