@@ -10,7 +10,6 @@ import (
 	"github.com/wwricu/bad-proxy-core/logger"
 )
 
-// streamUpTransport: a GET down and one endless POST body up, both to one URL.
 type streamUpTransport struct{ xhttpEndpoint }
 
 func (t streamUpTransport) Listen() (net.Listener, error) {
@@ -19,7 +18,7 @@ func (t streamUpTransport) Listen() (net.Listener, error) {
 
 func (t streamUpTransport) Dial() (net.Conn, error) {
 	sid := randomHex(8)
-	flow, err := t.tunnelURL(sid, -1) // both flows share this URL: GET down, POST up
+	flow, err := t.tunnelURL(sid, -1)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +33,6 @@ func (t streamUpTransport) Dial() (net.Conn, error) {
 	}
 	downResp, downErr := startFlow(tr, req, nil)
 
-	// The upload body never ends until the tunnel closes: the pipe is the writer.
 	pr, pw := io.Pipe()
 	req, err = t.newTunnelRequest(ctx, http.MethodPost, flow, pr)
 	if err != nil {
@@ -57,8 +55,6 @@ func (t streamUpTransport) Dial() (net.Conn, error) {
 	return conn, nil
 }
 
-// supervise watches the upload flow: a POST the front rejected ends the tunnel,
-// or the relay would sit reading a download that never has anything to say.
 func supervise(respCh chan *http.Response, errCh chan error, conn *XhttpConn) {
 	select {
 	case err := <-errCh:
@@ -74,9 +70,6 @@ func supervise(respCh chan *http.Response, errCh chan error, conn *XhttpConn) {
 	}
 }
 
-// serveUploadBody is stream-up's upload: one POST whose body is the whole upstream,
-// cut into numbered pieces so one reader path serves both split-flow modes. A
-// single producer hands out the seqs, so the reorder window stays empty.
 func (listener *XhttpListener) serveUploadBody(w http.ResponseWriter, r *http.Request, sid string) {
 	s, err := listener.session(sid, parseAddr(r.RemoteAddr))
 	if err != nil {
@@ -101,7 +94,6 @@ func (listener *XhttpListener) serveUploadBody(w http.ResponseWriter, r *http.Re
 			break
 		}
 	}
-	// The answer is owed only once the upload ends; writing it earlier would take
-	// the response headers from the duplex stream net/http is still reading.
+
 	w.WriteHeader(http.StatusOK)
 }

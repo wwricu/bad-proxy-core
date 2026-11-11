@@ -14,25 +14,15 @@ import (
 )
 
 const (
-	// maxSplitSessions bounds the memory an unauthenticated peer can pin: each
-	// session holds goroutines, channels and a reorder map before any credential.
 	maxSplitSessions = 4096
 
-	// maxBufferedPieces is Xray's scMaxBufferedPosts: a reorder queue this large
-	// is a dead tunnel, not a hiccup, so the session goes away.
 	maxBufferedPieces = 30
 
-	// downlinkGrace keeps a finished session's id reserved for a GET still on its way.
 	downlinkGrace = 30 * time.Second
 
-	// sessionIdle reaps a tunnel whose client vanished without a FIN or reset,
-	// which leaves no error for the handlers to notice.
 	sessionIdle = 5 * time.Minute
 )
 
-// session returns the tunnel for sid, starting one on its first request. Either
-// flow may arrive first and hand the conn to Accept. The cap applies to new ids
-// only, so an upload arriving after a burst cannot kill an existing tunnel.
 func (listener *XhttpListener) session(sid string, remote net.Addr) (*xhttpSession, error) {
 	listener.mu.Lock()
 	defer listener.mu.Unlock()
@@ -62,8 +52,6 @@ func (listener *XhttpListener) forget(sid string) {
 	delete(listener.sessions, sid)
 }
 
-// dropSessions tears every tunnel down. Closing one wants the map lock to remove
-// itself, so the list is taken first and closed outside it.
 func (listener *XhttpListener) dropSessions() {
 	listener.mu.Lock()
 	pending := make([]*xhttpSession, 0, len(listener.sessions))
@@ -77,16 +65,11 @@ func (listener *XhttpListener) dropSessions() {
 	}
 }
 
-// ---------------------------------------------------------------- server
-
-// xhttpPiece is one packet-up post, or one slice of a stream-up body.
 type xhttpPiece struct {
 	seq  int
 	data []byte
 }
 
-// xhttpSession is a server-side split-flow tunnel and the net.Conn the core
-// relays over: in carries the uplink, out the downlink waiting for the GET.
 type xhttpSession struct {
 	id     string
 	remote net.Addr
@@ -98,9 +81,6 @@ type xhttpSession struct {
 	done      chan struct{}
 	closeOnce sync.Once
 
-	// The reorder window belongs to the reader alone (one goroutine reads a
-	// session), so it needs no lock. A piece is released only once every earlier
-	// seq has landed. cur is what a short read left of the piece it took.
 	next    int
 	waiting map[int][]byte
 	cur     []byte
@@ -129,9 +109,6 @@ func newXhttpSession(sid string, remote net.Addr, listener *XhttpListener) *xhtt
 
 func (s *xhttpSession) touch() { s.lastSeen.Store(time.Now().Unix()) }
 
-// close ends the tunnel but releases its id only once a download has claimed it:
-// the GET may still be on its way with bytes queued, and a fresh session under
-// the same id would leave it waiting forever for a response the old one had.
 func (s *xhttpSession) close() {
 	s.closeOnce.Do(func() {
 		close(s.done)
@@ -141,8 +118,6 @@ func (s *xhttpSession) close() {
 	})
 }
 
-// reap is the idle guard: a client that vanishes without closing its TCP
-// connections leaves no error, so only a clock can tell the tunnel is gone.
 func (s *xhttpSession) reap() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -215,8 +190,6 @@ func (s *xhttpSession) Read(b []byte) (int, error) {
 	}
 }
 
-// take copies a piece's head into b and keeps the remainder for the next Read: a
-// 40-byte handshake and a 32 KiB copy both land inside one 64 KiB piece.
 func (s *xhttpSession) take(b, data []byte) int {
 	n := copy(b, data)
 	s.cur = data[n:]
@@ -285,8 +258,6 @@ func (s *xhttpSession) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-// deadlineTimer arms a deadline; an unset one is a nil channel that never fires,
-// so a relay parks in the select until traffic or a teardown arrives.
 func deadlineTimer(d time.Time) (<-chan time.Time, func()) {
 	if d.IsZero() {
 		return nil, func() {}
@@ -295,9 +266,6 @@ func deadlineTimer(d time.Time) (<-chan time.Time, func()) {
 	return timer.C, func() { timer.Stop() }
 }
 
-// serveDownlink answers the GET carrying a session's downstream. Its 200 is
-// flushed before there is anything to send: a reverse proxy may hold the whole
-// response until then.
 func (listener *XhttpListener) serveDownlink(w http.ResponseWriter, r *http.Request, sid string) {
 	s, err := listener.session(sid, parseAddr(r.RemoteAddr))
 	if err != nil {
@@ -305,11 +273,11 @@ func (listener *XhttpListener) serveDownlink(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if !s.downClaimed.CompareAndSwap(false, true) {
-		// A second download would interleave two readers over one stream.
+
 		refuse(w, http.StatusNotFound)
 		return
 	}
-	// Serving this download is what makes the id disposable.
+
 	defer listener.forget(s.id)
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Time{})
@@ -332,8 +300,7 @@ func (listener *XhttpListener) serveDownlink(w http.ResponseWriter, r *http.Requ
 			}
 			s.touch()
 		case <-s.done:
-			// Whatever is already queued still has to leave: dropping it truncates
-			// the response and the client reads an EOF mid-stream, losing the tail.
+
 			for {
 				select {
 				case leftover := <-s.out:
@@ -348,8 +315,7 @@ func (listener *XhttpListener) serveDownlink(w http.ResponseWriter, r *http.Requ
 				}
 			}
 		case <-r.Context().Done():
-			// The download is the only way out; with it gone the session has
-			// nowhere to send anything.
+
 			s.close()
 			return
 		}

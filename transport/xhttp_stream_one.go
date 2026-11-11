@@ -11,7 +11,6 @@ import (
 	"github.com/wwricu/bad-proxy-core/logger"
 )
 
-// streamOneTransport carries the tunnel as one duplex POST: body up, streamed 200 down.
 type streamOneTransport struct{ xhttpEndpoint }
 
 func (t streamOneTransport) Listen() (net.Listener, error) {
@@ -35,8 +34,8 @@ func (t streamOneTransport) Dial() (net.Conn, error) {
 		return nil, err
 	}
 
-	tr := t.flowTransport()     // shared client transport: one source for the budgets
-	tr.DisableKeepAlives = true // one request, one connection: it goes away with the tunnel
+	tr := t.flowTransport()
+	tr.DisableKeepAlives = true
 
 	respCh, errCh := startFlow(tr, req, pw.CloseWithError)
 
@@ -45,7 +44,7 @@ func (t streamOneTransport) Dial() (net.Conn, error) {
 		respCh: respCh,
 		errCh:  errCh,
 		name:   "xhttp",
-		// A rejected request must unblock the handshake write parked on the pipe.
+
 		onFail: func(error) { conn.Close() },
 	}
 	conn.onClose = func() {
@@ -58,11 +57,10 @@ func (t streamOneTransport) Dial() (net.Conn, error) {
 
 func (listener *XhttpListener) serveStreamOne(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
-	// Clear server-inherited deadlines: tunnels must survive idle keep-alive.
+
 	_ = rc.SetReadDeadline(time.Time{})
 	_ = rc.SetWriteDeadline(time.Time{})
-	// Without this net/http closes the request body once the response header is
-	// written, killing the duplex stream when the first upload chunk is small.
+
 	if err := rc.EnableFullDuplex(); err != nil {
 		logger.Warnf("xhttp: full duplex unavailable: %v", err)
 	}
@@ -76,7 +74,7 @@ func (listener *XhttpListener) serveStreamOne(w http.ResponseWriter, r *http.Req
 	conn.setWrite = rc.SetWriteDeadline
 	conn.onClose = func() {
 		closeDone()
-		// unblock a relay Read parked on the request body
+
 		_ = rc.SetReadDeadline(time.Now())
 	}
 
@@ -93,10 +91,8 @@ func (listener *XhttpListener) serveStreamOne(w http.ResponseWriter, r *http.Req
 	case <-listener.closed:
 		return
 	}
-	<-done // relay closed the tunnel (or peer vanished)
-	// Drain the upload before returning: closing on a body the client is still
-	// streaming sends a reset that throws away unread response bytes, losing the
-	// download's tail. Bounded, since a happy client streams forever.
+	<-done
+
 	_ = rc.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, _ = io.Copy(io.Discard, r.Body)
 }

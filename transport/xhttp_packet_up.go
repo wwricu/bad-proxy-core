@@ -14,19 +14,13 @@ import (
 )
 
 const (
-	// clientPieceBytes is one packet-up POST: twice the relay buffer, so a relay
-	// read never splits a piece.
 	clientPieceBytes = 64 * 1024
 
-	// maxPieceBytes is Xray's scMaxEachPostBytes; a piece beyond it gets 413.
 	maxPieceBytes = 1000000
 
-	// maxPiecesInFlight bounds parked uploads; past it a write waits for a slot
-	// instead of queueing memory.
 	maxPiecesInFlight = 16
 )
 
-// packetUpTransport: a GET down and one sequence-numbered POST per piece up.
 type packetUpTransport struct{ xhttpEndpoint }
 
 func (t packetUpTransport) Listen() (net.Listener, error) {
@@ -74,9 +68,6 @@ func (t packetUpTransport) Dial() (net.Conn, error) {
 	return conn, nil
 }
 
-// packetWriter turns the upload into sequence-numbered POSTs, fire-and-forget as
-// Xray's: no ack, no retransmission, a rejected piece takes the tunnel down. Bytes
-// are copied out because the relay reuses its buffer as soon as Write returns.
 type packetWriter struct {
 	send   func(seq int, body io.Reader) (*http.Response, error)
 	onFail func(error)
@@ -91,14 +82,11 @@ type packetWriter struct {
 	notified sync.Once
 }
 
-// shutdown stops the writer, keeping the first failure and releasing the window.
-// It never calls back, so conn.Close can reach it from the teardown it started.
 func (w *packetWriter) shutdown(err error) {
 	w.mu.Lock()
 	if w.err == nil {
 		if err == nil {
-			// A clean shutdown must still refuse later writes, or a racing Write
-			// posts a piece after the tunnel is gone.
+
 			err = io.ErrClosedPipe
 		}
 		w.err = err
@@ -107,9 +95,6 @@ func (w *packetWriter) shutdown(err error) {
 	w.stopped.Do(func() { close(w.dead) })
 }
 
-// kill stops the upload then takes the tunnel down. The teardown re-enters as
-// shutdown(nil), so the two steps cannot share one Once: the callback would
-// re-enter the Once on the same goroutine and hang with its own close held.
 func (w *packetWriter) kill(err error) {
 	w.shutdown(err)
 	if err != nil {
@@ -148,8 +133,6 @@ func (w *packetWriter) Write(b []byte) (int, error) {
 	return total, nil
 }
 
-// post hands one piece off. The window is claimed before the seq, so a waiting
-// piece cannot overtake one in flight and the server never bridges a gap.
 func (w *packetWriter) post(piece []byte) error {
 	select {
 	case w.window <- struct{}{}:

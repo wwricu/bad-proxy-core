@@ -11,23 +11,16 @@ import (
 )
 
 const (
-	// responseHeaderTimeout is separate from the connect budget: a buffering
-	// proxy may hold a response head until the upload body yields bytes.
 	responseHeaderTimeout = 30 * time.Second
 )
 
-// ---------------------------------------------------------------- client
-
-// flowTransport is the pool one tunnel's requests share: over TLS the stdlib
-// multiplexes them over one HTTP/2 connection, over plain TCP each flow takes
-// its own, so idle connections must not be evicted after one use.
 func (t xhttpEndpoint) flowTransport() *http.Transport {
 	return &http.Transport{
 		ForceAttemptHTTP2:   true,
 		TLSClientConfig:     clientTlsConfig(t.address, t.authority),
 		TLSHandshakeTimeout: t.timeout,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			// ctx is the tunnel's way out: closing it cancels a lingering connect.
+
 			return (&net.Dialer{Timeout: t.timeout}).DialContext(ctx, "tcp", t.address)
 		},
 		MaxIdleConnsPerHost:   maxPiecesInFlight,
@@ -35,9 +28,6 @@ func (t xhttpEndpoint) flowTransport() *http.Transport {
 	}
 }
 
-// startFlow issues one request without waiting for its answer, so Dial does not
-// block on a buffering front. onErr runs before the error reaches errCh: the
-// duplex dials pass pw.CloseWithError to unblock a handshake write on the pipe.
 func startFlow(tr *http.Transport, req *http.Request, onErr func(error) error) (chan *http.Response, chan error) {
 	respCh := make(chan *http.Response, 1)
 	errCh := make(chan error, 1)
@@ -55,14 +45,11 @@ func startFlow(tr *http.Transport, req *http.Request, onErr func(error) error) (
 	return respCh, errCh
 }
 
-// lazyBody waits for the response (which arrives only once the request body has
-// started flowing) then reads it. A non-200 becomes a read error that tears the
-// tunnel down, so a rejected request fails on the first read, not a hang.
 type lazyBody struct {
 	respCh chan *http.Response
 	errCh  chan error
-	name   string // protocol name for error messages
-	// wantProtoMajor rejects a response that negotiated the wrong protocol; 0 accepts any.
+	name   string
+
 	wantProtoMajor int
 	onFail         func(error)
 
@@ -86,7 +73,7 @@ func (l *lazyBody) Read(p []byte) (int, error) {
 				l.onFail(l.err)
 			}
 		case l.err = <-l.errCh:
-			// The RoundTrip goroutine already closed the pipe writer.
+
 		}
 		l.ready = true
 	}
@@ -96,10 +83,6 @@ func (l *lazyBody) Read(p []byte) (int, error) {
 	return l.resp.Body.Read(p)
 }
 
-// ---------------------------------------------------------------- shared conn
-
-// XhttpConn adapts one duplex HTTP POST (body up, response down) to net.Conn.
-// The split-flow modes use xhttpSession instead.
 type XhttpConn struct {
 	reader  io.Reader
 	writer  io.Writer
@@ -107,9 +90,6 @@ type XhttpConn struct {
 	flush   bool
 	remote  net.Addr
 
-	// deadline hooks, set only server-side (via ResponseController) to bound a
-	// stalled body read. The client's wait is bounded by ResponseHeaderTimeout,
-	// so these stay nil there and the deadline calls are no-ops.
 	setRead  func(time.Time) error
 	setWrite func(time.Time) error
 

@@ -21,12 +21,10 @@ import (
 
 const (
 	xhttpContentType = "application/octet-stream"
-	// PaddingParam is a query parameter on every request, not a header: Xray
-	// never looks at a header for it.
+
 	PaddingParam = "x_padding"
 )
 
-// xhttp mode names, shared with Xray's config.
 const (
 	XhttpModeAuto      = "auto"
 	XhttpModeStreamOne = "stream-one"
@@ -34,9 +32,6 @@ const (
 	XhttpModePacketUp  = "packet-up"
 )
 
-// ResolveXhttpMode normalises a configured mode. Unset stays unset: the client
-// then dials stream-one while the server answers every shape, so leaving the
-// mode out is not the same as naming stream-one (which pins the server).
 func ResolveXhttpMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case XhttpModeAuto:
@@ -54,21 +49,16 @@ func ResolveXhttpMode(mode string) string {
 	return ""
 }
 
-// xhttpEndpoint is the config every mode shares. The mode is the concrete
-// Transport wrapping it, picked once by newXhttp; padding is a transport
-// property (common.DefaultPadding), not an endpoint choice.
 type xhttpEndpoint struct {
 	address   string
 	path      string
-	authority string // SNI / Host, empty means derive from the address host
-	useTLS    bool   // client only: https scheme + TLS config
-	certPath  string // server only
-	keyPath   string // server only
+	authority string
+	useTLS    bool
+	certPath  string
+	keyPath   string
 	timeout   time.Duration
 }
 
-// newXhttp resolves the mode once, at config time, so a typo is reported once
-// rather than on every tunnel.
 func newXhttp(o Options, timeout time.Duration) Transport {
 	endpoint := xhttpEndpoint{
 		address:   o.Address,
@@ -92,29 +82,20 @@ func newXhttp(o Options, timeout time.Duration) Transport {
 	return defaultTransport{streamOneTransport{endpoint}}
 }
 
-// autoTransport dials packet-up (inherited) and answers every shape: the mode
-// is never on the wire, so an auto server fronts whichever mode clients speak.
 type autoTransport struct{ packetUpTransport }
 
 func (t autoTransport) Listen() (net.Listener, error) {
 	return t.listen(xhttpAnswersAny)
 }
 
-// defaultTransport dials stream-one (inherited), the long-lived POST that
-// survives a buffering reverse proxy, while still answering every shape.
 type defaultTransport struct{ streamOneTransport }
 
 func (t defaultTransport) Listen() (net.Listener, error) {
 	return t.listen(xhttpAnswersAny)
 }
 
-// xhttpAnswersAny accepts every shape; the GET/POST gate lives in serveHTTP.
 func xhttpAnswersAny(_ string, depth int) bool { return depth <= 2 }
 
-// ---------------------------------------------------------------- client
-
-// tunnelURL builds one request URL: the normalised path, then the session id
-// and sequence number as further segments, the layout an Xray client uses.
 func (t xhttpEndpoint) tunnelURL(sid string, seq int) (string, error) {
 	host, _, err := net.SplitHostPort(t.address)
 	if err != nil {
@@ -138,9 +119,6 @@ func (t xhttpEndpoint) tunnelURL(sid string, seq int) (string, error) {
 	return url, nil
 }
 
-// newTunnelRequest draws the padding query per request so sizes never settle on
-// one value. Xray's server does not require it, but a request without it is a
-// fixed-size giveaway.
 func (t xhttpEndpoint) newTunnelRequest(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
@@ -153,12 +131,9 @@ func (t xhttpEndpoint) newTunnelRequest(ctx context.Context, method, url string,
 	return req, nil
 }
 
-// ---------------------------------------------------------------- server
-
 type XhttpListener struct {
 	path string
-	// answers is the server half of the mode: a pinned server answers only its
-	// mode's request shapes, the only thing pinning can usefully do.
+
 	answers   func(method string, depth int) bool
 	addr      net.Addr
 	ch        chan net.Conn
@@ -166,15 +141,11 @@ type XhttpListener struct {
 	closed    chan struct{}
 	closeOnce sync.Once
 
-	// sessions holds the split-flow tunnels, which outlive any one handler. The
-	// cap is checked before creation because nothing is authenticated yet.
 	mu          sync.Mutex
 	sessions    map[string]*xhttpSession
 	maxSessions int
 }
 
-// listen builds the one listener skeleton every mode shares; only the answers
-// predicate differs.
 func (t xhttpEndpoint) listen(answers func(method string, depth int) bool) (net.Listener, error) {
 	listener := &XhttpListener{
 		path:        xhttpPath(t.path),
@@ -190,13 +161,12 @@ func (t xhttpEndpoint) listen(answers func(method string, depth int) bool) (net.
 	mux.HandleFunc("/", listener.serveHTTP)
 
 	var protocols http.Protocols
-	protocols.SetHTTP1(true) // HTTP/1.1 chunked duplex, the nginx-hop mode
+	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
 	server := &http.Server{
 		Handler:   mux,
 		Protocols: &protocols,
-		// A handler clears this once a tunnel exists; before that, half a
-		// request head must not pin the connection.
+
 		ReadHeaderTimeout: common.DefaultHandshakeTimeout,
 	}
 	listener.server = server
@@ -233,9 +203,6 @@ func (t xhttpEndpoint) listen(answers func(method string, depth int) bool) (net.
 	return listener, nil
 }
 
-// serveHTTP is the single entry for every request. The path is the whole gate:
-// anything not under the tunnel path gets the same 404 as any other location,
-// so the tunnel's presence cannot be probed.
 func (listener *XhttpListener) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	segs, ok := xhttpSegments(listener.path, r.URL.Path)
 	if !ok || (r.Method != http.MethodGet && r.Method != http.MethodPost) || !listener.answers(r.Method, len(segs)) {
@@ -261,9 +228,6 @@ func (listener *XhttpListener) serveHTTP(w http.ResponseWriter, r *http.Request)
 	}
 }
 
-// refuse ends the connection with the rejection: net/http drains an unread
-// request body before flushing, so a still-streaming upload would wait for a
-// rejection it was already given. Connection: close skips that drain.
 func refuse(w http.ResponseWriter, code int) {
 	w.Header().Set("Connection", "close")
 	w.WriteHeader(code)
@@ -291,11 +255,6 @@ func (listener *XhttpListener) Close() error {
 
 func (listener *XhttpListener) Addr() net.Addr { return listener.addr }
 
-// ---------------------------------------------------------------- helpers
-
-// xhttpPath normalises a path the way Xray does: leading and trailing slash. An
-// Xray hub matches by prefix against its own normalised path, so "/xrt" posted
-// against a server serving "/xrt/" is a 404 away from connecting.
 func xhttpPath(path string) string {
 	if path == "" {
 		return "/"
@@ -309,9 +268,6 @@ func xhttpPath(path string) string {
 	return path
 }
 
-// xhttpSegments splits what follows the tunnel path into at most the session id
-// and the sequence number. The trailing slash matches on either side because a
-// reverse proxy may add or eat it.
 func xhttpSegments(want, got string) ([]string, bool) {
 	base := strings.TrimSuffix(xhttpPath(want), "/")
 	if !strings.HasPrefix(got, base) {
@@ -346,9 +302,6 @@ func randomHex(n int) string {
 	return hex.EncodeToString(p)
 }
 
-// randomPadding returns Xray's repeat-x filler: a run of 'X' whose length is
-// redrawn per request from the "min-max" spec. The content is fixed (the server
-// echoes it); the length carries the blur. An empty or non-positive spec is "".
 func randomPadding(spec string) string {
 	spec = strings.TrimSpace(spec)
 	low, high := 0, 0
