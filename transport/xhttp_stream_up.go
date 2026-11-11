@@ -12,10 +12,6 @@ import (
 
 type streamUpTransport struct{ xhttpEndpoint }
 
-func (t streamUpTransport) Listen() (net.Listener, error) {
-	return t.listen(func(_ string, depth int) bool { return depth == 1 })
-}
-
 func (t streamUpTransport) Dial() (net.Conn, error) {
 	sid := randomHex(8)
 	flow, err := t.tunnelURL(sid, -1)

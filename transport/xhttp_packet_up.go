@@ -23,12 +23,6 @@ const (
 
 type packetUpTransport struct{ xhttpEndpoint }
 
-func (t packetUpTransport) Listen() (net.Listener, error) {
-	return t.listen(func(method string, depth int) bool {
-		return (depth == 1 && method == http.MethodGet) || (depth == 2 && method == http.MethodPost)
-	})
-}
-
 func (t packetUpTransport) Dial() (net.Conn, error) {
 	sid := randomHex(8)
 	flow, err := t.tunnelURL(sid, -1)

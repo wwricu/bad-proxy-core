@@ -24,25 +24,17 @@ func listenXhttp(o Options) (net.Listener, error) { return New("xhttp", o).Liste
 // packet-up piece, because a handshake read of 40 bytes lands inside a 64 KiB
 // upload and whatever the caller did not ask for still has to reach the read
 // after it.
-// wantTunnel says whether a tunnel is due here. When it is not, the pair is
-// refused, and then either nothing is ever accepted or the session is handed
-// over empty - which is the test passing, not the relay failing on its own.
-func echoXhttpListener(t *testing.T, ln net.Listener, n int, wantTunnel bool) {
+func echoXhttpListener(t *testing.T, ln net.Listener, n int) {
 	t.Helper()
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
-			if wantTunnel {
-				t.Errorf("accept: %v", err)
-			}
+			t.Errorf("accept: %v", err)
 			return
 		}
 		defer conn.Close()
 		buf := make([]byte, 4096)
 		copied, err := io.CopyBuffer(conn, io.LimitReader(conn, int64(n)), buf)
-		if !wantTunnel {
-			return
-		}
 		if err != nil {
 			t.Errorf("relay copy: %v", err)
 		} else if copied != int64(n) {
@@ -73,11 +65,9 @@ func echoPayload(n int) []byte {
 	return b
 }
 
-// Each pairing that is supposed to connect has to carry a payload bigger than
-// one piece and come back whole, and a server left on auto has to answer every
-// mode: the mode is never sent on the wire, so restricting is the only thing a
-// server-side mode can do, and auto is what lets one BPC server front whichever
-// mode its clients happen to speak.
+// Each pairing has to carry a payload bigger than one piece and come back
+// whole. The mode is never sent on the wire, so every server answers every
+// shape: a client of any mode reaches a server of any mode.
 func TestXhttpModeSelfInterop(t *testing.T) {
 	cases := []struct{ client, server string }{
 		{"", ""},
@@ -92,7 +82,7 @@ func TestXhttpModeSelfInterop(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(xhttpModeName(c.client)+" client, "+xhttpModeName(c.server)+" server", func(t *testing.T) {
-			runXhttpEcho(t, c.client, c.server, true, 200*1024)
+			runXhttpEcho(t, c.client, c.server, 200*1024)
 		})
 	}
 }
@@ -104,26 +94,10 @@ func xhttpModeName(m string) string {
 	return m
 }
 
-// A server pinned to one mode must refuse the others rather than half-answer
-// them, otherwise pinning would be a decoration.
-func TestXhttpModeRefused(t *testing.T) {
-	for _, pair := range [][2]string{
-		{XhttpModeStreamUp, XhttpModeStreamOne},
-		{XhttpModePacketUp, XhttpModeStreamOne},
-		{XhttpModeStreamOne, XhttpModePacketUp},
-		{XhttpModeStreamUp, XhttpModePacketUp},
-	} {
-		t.Run("client "+pair[0]+" against "+pair[1], func(t *testing.T) {
-			runXhttpEcho(t, pair[0], pair[1], false, 64)
-		})
-	}
-}
-
-// runXhttpEcho dials one tunnel and asks the server for the payload back. When
-// the pair is not supposed to connect, the tunnel has to fail loudly: a client
-// that hangs, or that reads a zero-byte "success" out of a rejected request,
-// would look like a working tunnel to whatever is relaying over it.
-func runXhttpEcho(t *testing.T, clientMode, serverMode string, wantOK bool, size int) {
+// runXhttpEcho dials one tunnel and asks the server for the payload back. The
+// dial runs under its own timeout so a tunnel that never comes up fails loudly
+// instead of hanging the test.
+func runXhttpEcho(t *testing.T, clientMode, serverMode string, size int) {
 	t.Helper()
 
 	addr := freeAddr(t)
@@ -132,7 +106,7 @@ func runXhttpEcho(t *testing.T, clientMode, serverMode string, wantOK bool, size
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	echoXhttpListener(t, listener, size, wantOK)
+	echoXhttpListener(t, listener, size)
 
 	payload := echoPayload(size)
 	dialed := make(chan net.Conn, 1)
@@ -149,10 +123,6 @@ func runXhttpEcho(t *testing.T, clientMode, serverMode string, wantOK bool, size
 	var conn net.Conn
 	select {
 	case err := <-errCh:
-		if !wantOK {
-			t.Logf("refused at dial: %v", err)
-			return
-		}
 		t.Fatalf("dial: %v", err)
 	case conn = <-dialed:
 	case <-time.After(8 * time.Second):
@@ -168,23 +138,11 @@ func runXhttpEcho(t *testing.T, clientMode, serverMode string, wantOK bool, size
 	}()
 
 	got := make([]byte, len(payload))
-	readErr := func() error {
-		_, err := io.ReadFull(conn, got)
-		return err
-	}()
-
-	if !wantOK {
-		if readErr == nil && bytesEqual(got, payload) {
-			t.Fatal("a refused mode echoed the payload back")
-		}
-		t.Logf("refused as expected: %v", readErr)
-		return
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read: %v", err)
 	}
 	if err := <-writeErr; err != nil {
 		t.Fatalf("write: %v", err)
-	}
-	if readErr != nil {
-		t.Fatalf("read: %v", readErr)
 	}
 	if !bytesEqual(got, payload) {
 		t.Fatalf("echo corrupted: first mismatch at %d of %d", firstMismatch(got, payload), len(payload))
@@ -413,7 +371,7 @@ func TestXhttpPathShape(t *testing.T) {
 func TestXhttpModeResolution(t *testing.T) {
 	for in, want := range map[string]string{
 		"":              "",                 // the endpoint picks its own default
-		"stream-one":    XhttpModeStreamOne, // named, it pins the server
+		"stream-one":    XhttpModeStreamOne, // named, it selects the client dial
 		"auto":          XhttpModeAuto,
 		"AUTO":          XhttpModeAuto,
 		" stream-up ":   XhttpModeStreamUp,
@@ -476,7 +434,7 @@ func TestXhttpLateDownlinkGetsTheTail(t *testing.T) {
 
 	const sid = "deadbeef00000000"
 	payload := []byte("the tail of a tunnel whose download has not arrived yet")
-	echoXhttpListener(t, listener, len(payload), true)
+	echoXhttpListener(t, listener, len(payload))
 
 	if status := rawXhttpUpload(t, addr, "/xrt/"+sid+"/0", payload); status != http.StatusOK {
 		t.Fatalf("piece answered %d", status)
@@ -574,42 +532,24 @@ func rawPathOnly(t *testing.T, addr, method, path string) int {
 	return resp.StatusCode
 }
 
-// The request-shape table behind the mode restriction, driven through a real
-// listener: depth is how many segments follow the tunnel path, which is the
-// only thing a server can read a mode off.
+// The server answers by request shape alone, never by mode: depth is how many
+// segments follow the tunnel path. Every configured mode must answer this one
+// table identically, driven through a real listener.
 func TestXhttpAnswers(t *testing.T) {
-	type shape struct {
+	shapes := []struct {
 		method string
 		depth  int
 		ok     bool
+	}{
+		{http.MethodPost, 0, true},
+		{http.MethodGet, 0, true},
+		{http.MethodGet, 1, true},
+		{http.MethodPost, 1, true},
+		{http.MethodPost, 2, true},
+		{http.MethodPost, 3, false},
+		{http.MethodDelete, 0, false},
 	}
-	tables := map[string][]shape{
-		XhttpModeAuto: {
-			{http.MethodPost, 0, true},
-			{http.MethodGet, 0, true},
-			{http.MethodGet, 1, true},
-			{http.MethodPost, 1, true},
-			{http.MethodPost, 2, true},
-			{http.MethodPost, 3, false},
-		},
-		XhttpModeStreamOne: {
-			{http.MethodPost, 0, true},
-			{http.MethodGet, 1, false},
-			{http.MethodDelete, 0, false},
-		},
-		XhttpModeStreamUp: {
-			{http.MethodGet, 1, true},
-			{http.MethodPost, 1, true},
-			{http.MethodPost, 0, false},
-		},
-		XhttpModePacketUp: {
-			{http.MethodGet, 1, true},
-			{http.MethodPost, 2, true},
-			{http.MethodPost, 1, false},
-		},
-	}
-	tables[""] = tables[XhttpModeAuto] // an unset server answers every shape too
-	for mode, shapes := range tables {
+	for _, mode := range []string{"", XhttpModeAuto, XhttpModeStreamOne, XhttpModeStreamUp, XhttpModePacketUp} {
 		t.Run(xhttpModeName(mode), func(t *testing.T) {
 			addr := freeAddr(t)
 			listener, err := listenXhttp(Options{Address: addr, Path: "/xrt", Mode: mode})

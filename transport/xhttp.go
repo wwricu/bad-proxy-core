@@ -72,29 +72,11 @@ func newXhttp(o Options, timeout time.Duration) Transport {
 	switch ResolveXhttpMode(o.Mode) {
 	case XhttpModeStreamUp:
 		return streamUpTransport{endpoint}
-	case XhttpModePacketUp:
+	case XhttpModeAuto, XhttpModePacketUp:
 		return packetUpTransport{endpoint}
-	case XhttpModeAuto:
-		return autoTransport{packetUpTransport{endpoint}}
-	case XhttpModeStreamOne:
-		return streamOneTransport{endpoint}
 	}
-	return defaultTransport{streamOneTransport{endpoint}}
+	return streamOneTransport{endpoint}
 }
-
-type autoTransport struct{ packetUpTransport }
-
-func (t autoTransport) Listen() (net.Listener, error) {
-	return t.listen(xhttpAnswersAny)
-}
-
-type defaultTransport struct{ streamOneTransport }
-
-func (t defaultTransport) Listen() (net.Listener, error) {
-	return t.listen(xhttpAnswersAny)
-}
-
-func xhttpAnswersAny(_ string, depth int) bool { return depth <= 2 }
 
 func (t xhttpEndpoint) tunnelURL(sid string, seq int) (string, error) {
 	host, _, err := net.SplitHostPort(t.address)
@@ -134,7 +116,6 @@ func (t xhttpEndpoint) newTunnelRequest(ctx context.Context, method, url string,
 type XhttpListener struct {
 	path string
 
-	answers   func(method string, depth int) bool
 	addr      net.Addr
 	ch        chan net.Conn
 	server    *http.Server
@@ -146,10 +127,9 @@ type XhttpListener struct {
 	maxSessions int
 }
 
-func (t xhttpEndpoint) listen(answers func(method string, depth int) bool) (net.Listener, error) {
+func (t xhttpEndpoint) Listen() (net.Listener, error) {
 	listener := &XhttpListener{
 		path:        xhttpPath(t.path),
-		answers:     answers,
 		addr:        parseAddr(t.address),
 		ch:          make(chan net.Conn, 32),
 		closed:      make(chan struct{}),
@@ -205,7 +185,7 @@ func (t xhttpEndpoint) listen(answers func(method string, depth int) bool) (net.
 
 func (listener *XhttpListener) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	segs, ok := xhttpSegments(listener.path, r.URL.Path)
-	if !ok || (r.Method != http.MethodGet && r.Method != http.MethodPost) || !listener.answers(r.Method, len(segs)) {
+	if !ok || (r.Method != http.MethodGet && r.Method != http.MethodPost) {
 		refuse(w, http.StatusNotFound)
 		return
 	}
