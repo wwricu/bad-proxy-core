@@ -10,9 +10,7 @@ import (
 	"time"
 )
 
-const (
-	responseHeaderTimeout = 30 * time.Second
-)
+const responseHeaderTimeout = 30 * time.Second
 
 func (t xhttpEndpoint) flowTransport() *http.Transport {
 	return &http.Transport{
@@ -20,7 +18,6 @@ func (t xhttpEndpoint) flowTransport() *http.Transport {
 		TLSClientConfig:     clientTlsConfig(t.address, t.authority),
 		TLSHandshakeTimeout: t.timeout,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-
 			return (&net.Dialer{Timeout: t.timeout}).DialContext(ctx, "tcp", t.address)
 		},
 		MaxIdleConnsPerHost:   maxPiecesInFlight,
@@ -73,7 +70,6 @@ func (l *lazyBody) Read(p []byte) (int, error) {
 				l.onFail(l.err)
 			}
 		case l.err = <-l.errCh:
-
 		}
 		l.ready = true
 	}

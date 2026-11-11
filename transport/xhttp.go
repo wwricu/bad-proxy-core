@@ -21,8 +21,7 @@ import (
 
 const (
 	xhttpContentType = "application/octet-stream"
-
-	PaddingParam = "x_padding"
+	PaddingParam     = "x_padding"
 )
 
 const (
@@ -134,7 +133,7 @@ func (t xhttpEndpoint) Listen() (net.Listener, error) {
 		ch:          make(chan net.Conn, 32),
 		closed:      make(chan struct{}),
 		sessions:    make(map[string]*xhttpSession),
-		maxSessions: maxSplitSessions,
+		maxSessions: 4096,
 	}
 
 	mux := http.NewServeMux()
@@ -144,9 +143,8 @@ func (t xhttpEndpoint) Listen() (net.Listener, error) {
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
 	server := &http.Server{
-		Handler:   mux,
-		Protocols: &protocols,
-
+		Handler:           mux,
+		Protocols:         &protocols,
 		ReadHeaderTimeout: common.DefaultHandshakeTimeout,
 	}
 	listener.server = server

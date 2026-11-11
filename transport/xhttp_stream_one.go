@@ -38,7 +38,6 @@ func (t streamOneTransport) Dial() (net.Conn, error) {
 		respCh: respCh,
 		errCh:  errCh,
 		name:   "xhttp",
-
 		onFail: func(error) { conn.Close() },
 	}
 	conn.onClose = func() {
@@ -68,15 +67,12 @@ func (listener *XhttpListener) serveStreamOne(w http.ResponseWriter, r *http.Req
 	conn.setWrite = rc.SetWriteDeadline
 	conn.onClose = func() {
 		closeDone()
-
 		_ = rc.SetReadDeadline(time.Now())
 	}
 
 	w.Header().Set("Content-Type", xhttpContentType)
 	w.WriteHeader(http.StatusOK)
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
+	rc.Flush()
 
 	select {
 	case listener.ch <- conn:

@@ -13,15 +13,7 @@ import (
 	"github.com/wwricu/bad-proxy-core/logger"
 )
 
-const (
-	maxSplitSessions = 4096
-
-	maxBufferedPieces = 30
-
-	downlinkGrace = 30 * time.Second
-
-	sessionIdle = 5 * time.Minute
-)
+const maxBufferedPieces = 30
 
 func (listener *XhttpListener) session(sid string, remote net.Addr) (*xhttpSession, error) {
 	listener.mu.Lock()
@@ -127,13 +119,13 @@ func (s *xhttpSession) reap() {
 			if s.downClaimed.Load() {
 				return
 			}
-			timer := time.NewTimer(downlinkGrace)
+			timer := time.NewTimer(30 * time.Second)
 			defer timer.Stop()
 			<-timer.C
 			s.listen.forget(s.id)
 			return
 		case <-ticker.C:
-			if time.Since(time.Unix(s.lastSeen.Load(), 0)) > sessionIdle {
+			if time.Since(time.Unix(s.lastSeen.Load(), 0)) > 5*time.Minute {
 				logger.Debugf("xhttp: session %s idle, dropping", s.id)
 				s.close()
 				return
@@ -273,7 +265,6 @@ func (listener *XhttpListener) serveDownlink(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if !s.downClaimed.CompareAndSwap(false, true) {
-
 		refuse(w, http.StatusNotFound)
 		return
 	}
@@ -285,9 +276,7 @@ func (listener *XhttpListener) serveDownlink(w http.ResponseWriter, r *http.Requ
 
 	w.Header().Set("Content-Type", xhttpContentType)
 	w.WriteHeader(http.StatusOK)
-	if f, ok := w.(http.Flusher); ok {
-		f.Flush()
-	}
+	rc.Flush()
 	for {
 		select {
 		case chunk := <-s.out:
@@ -295,27 +284,21 @@ func (listener *XhttpListener) serveDownlink(w http.ResponseWriter, r *http.Requ
 				s.close()
 				return
 			}
-			if f, ok := w.(http.Flusher); ok {
-				f.Flush()
-			}
+			rc.Flush()
 			s.touch()
 		case <-s.done:
-
 			for {
 				select {
 				case leftover := <-s.out:
 					if _, err := w.Write(leftover); err != nil {
 						return
 					}
-					if f, ok := w.(http.Flusher); ok {
-						f.Flush()
-					}
+					rc.Flush()
 				default:
 					return
 				}
 			}
 		case <-r.Context().Done():
-
 			s.close()
 			return
 		}

@@ -14,10 +14,8 @@ import (
 )
 
 const (
-	clientPieceBytes = 64 * 1024
-
-	maxPieceBytes = 1000000
-
+	clientPieceBytes  = 64 * 1024
+	maxPieceBytes     = 1000000
 	maxPiecesInFlight = 16
 )
 
@@ -80,7 +78,6 @@ func (w *packetWriter) shutdown(err error) {
 	w.mu.Lock()
 	if w.err == nil {
 		if err == nil {
-
 			err = io.ErrClosedPipe
 		}
 		w.err = err
