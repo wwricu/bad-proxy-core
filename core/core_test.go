@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -196,7 +197,7 @@ func TestTunnelPumpTreatsEOFAsCleanEnd(t *testing.T) {
 	// pump only needs the activity stamp and a pooled buffer, not live peers
 	tr := &tunnel{window: time.Minute}
 	var dst bytes.Buffer
-	payload := bytes.Repeat([]byte("x"), relayBufferSize+7)
+	payload := bytes.Repeat([]byte("x"), int(relayBufferSize.Load())+7)
 	n, err := tr.pump(&dst, bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("EOF must be a clean end, got %v", err)
@@ -204,6 +205,36 @@ func TestTunnelPumpTreatsEOFAsCleanEnd(t *testing.T) {
 	if n != int64(len(payload)) || dst.Len() != len(payload) {
 		t.Fatalf("pump moved %d bytes, buffer holds %d, want %d", n, dst.Len(), len(payload))
 	}
+}
+
+// Stop closes listeners only, so the next Proxy is built while this one's
+// tunnels still borrow buffers. Run under -race: the size the pool reads and
+// the size newProxy writes are the same word.
+func TestRelayBufferSizeAcrossRestart(t *testing.T) {
+	cfg := Config{Outbounds: []OutboundConfig{{Tag: "", Protocol: FREEDOM}}}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 1; i <= 64; i++ {
+			if _, err := newProxy(cfg, settings{relayBufferKiB: i}); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		tr := &tunnel{}
+		var dst bytes.Buffer
+		for i := 0; i < 64; i++ {
+			if _, err := tr.pump(&dst, bytes.NewReader([]byte("x"))); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
 }
 
 // A failing write stops the pump and reports the cause - the parked copy must

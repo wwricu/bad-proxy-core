@@ -92,13 +92,14 @@ func (t *tunnel) run() {
 // also Go's own io.Copy default and exactly half an xhttp packet-up piece, so a
 // piece still arrives in a clean number of reads.
 //
-// relayBufferSize is set once from general.relay_buffer_kib before any stream
-// starts, so the pool New closure needs no synchronisation.
-var relayBufferSize = common.DefaultRelayBufferKiB * 1024
+// Stop closes listeners only, so a restart rewrites this while old tunnels read it.
+var relayBufferSize atomic.Int64
+
+func init() { relayBufferSize.Store(common.DefaultRelayBufferKiB * 1024) }
 
 var relayBufPool = sync.Pool{
 	New: func() any {
-		buf := make([]byte, relayBufferSize)
+		buf := make([]byte, relayBufferSize.Load())
 		return &buf
 	},
 }

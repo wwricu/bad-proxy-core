@@ -32,9 +32,7 @@ type Config struct {
 const FREEDOM = "freedom"
 
 func newProxy(config Config, set settings) (*Proxy, error) {
-	// set once, before any tunnel exists: no relay ever copies through a buffer
-	// sized from a stale setting
-	relayBufferSize = set.relayBufferKiB * 1024
+	relayBufferSize.Store(int64(set.relayBufferKiB) * 1024)
 	p := Proxy{
 		settings:  set,
 		outbounds: make(map[string]*Outbound, len(config.Outbounds)),
