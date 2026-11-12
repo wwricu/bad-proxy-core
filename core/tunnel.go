@@ -133,6 +133,11 @@ func (t *tunnel) pump(dst io.Writer, src io.Reader) (int64, error) {
 		}
 		if rerr != nil {
 			if errors.Is(rerr, io.EOF) {
+				// The peer needs this FIN to finish its own side; run still waits
+				// for the reverse copy before either conn is closed.
+				if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+					_ = cw.CloseWrite()
+				}
 				return total, nil
 			}
 			return total, rerr

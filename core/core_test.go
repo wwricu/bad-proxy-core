@@ -207,6 +207,49 @@ func TestTunnelPumpTreatsEOFAsCleanEnd(t *testing.T) {
 	}
 }
 
+// The peer has to learn that this direction is over without waiting for the
+// reverse one to finish: a protocol that only sends its last bytes after seeing
+// EOF would otherwise stall until the idle reaper cuts the pair. Two separate
+// TCP pairs joined by the pump, so the FIN can only arrive by being forwarded.
+func TestTunnelPumpHalfClosesThePeer(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accept := func() net.Conn {
+		c, err := ln.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	dial := func() net.Conn {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	client := dial()
+	defer client.Close()
+	in := accept()
+	defer in.Close()
+	out := dial()
+	defer out.Close()
+	server := accept()
+	defer server.Close()
+
+	go (&tunnel{}).pump(out, in)
+	if err := client.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	_ = server.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := server.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("peer read %v, want EOF from the propagated FIN", err)
+	}
+}
+
 // Stop closes listeners only, so the next Proxy is built while this one's
 // tunnels still borrow buffers. Run under -race: the size the pool reads and
 // the size newProxy writes are the same word.
