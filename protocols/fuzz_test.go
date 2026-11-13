@@ -6,9 +6,7 @@ import (
 	"testing"
 )
 
-// The pipe closes once the input is spent, so a parser waiting for a field that
-// never arrives sees EOF instead of parking the fuzz worker. Replies are drained
-// because net.Pipe is synchronous.
+// net.Pipe is synchronous: drain replies and close so a short input sees EOF.
 func FuzzSocks5Handshake(f *testing.F) {
 	f.Add([]byte{5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, 0, 80})
 	f.Add([]byte{5, 1, 0, 5, 1, 0, 3, 11, 'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'c', 'o', 'm', 1, 187})

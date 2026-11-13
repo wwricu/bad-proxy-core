@@ -207,10 +207,7 @@ func TestTunnelPumpTreatsEOFAsCleanEnd(t *testing.T) {
 	}
 }
 
-// The peer has to learn that this direction is over without waiting for the
-// reverse one to finish: a protocol that only sends its last bytes after seeing
-// EOF would otherwise stall until the idle reaper cuts the pair. Two separate
-// TCP pairs joined by the pump, so the FIN can only arrive by being forwarded.
+// Two separate TCP pairs, so the FIN must be forwarded by the pump to arrive.
 func TestTunnelPumpHalfClosesThePeer(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -250,9 +247,7 @@ func TestTunnelPumpHalfClosesThePeer(t *testing.T) {
 	}
 }
 
-// Stop closes listeners only, so the next Proxy is built while this one's
-// tunnels still borrow buffers. Run under -race: the size the pool reads and
-// the size newProxy writes are the same word.
+// Run under -race: newProxy writes the size word the pool reads.
 func TestRelayBufferSizeAcrossRestart(t *testing.T) {
 	cfg := Config{Outbounds: []OutboundConfig{{Tag: "", Protocol: FREEDOM}}}
 	var wg sync.WaitGroup
